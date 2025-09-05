@@ -830,7 +830,7 @@ impl Storage {
         key1: TaskId,
         key2: TaskId,
     ) -> (StorageWriteGuard<'_>, StorageWriteGuard<'_>) {
-        let (a, b) = get_multiple_mut(&self.map, key1, key2, || InnerStorage::new());
+        let (a, b) = get_multiple_mut(&self.map, key1, key2, InnerStorage::new);
         (
             StorageWriteGuard {
                 storage: self,
