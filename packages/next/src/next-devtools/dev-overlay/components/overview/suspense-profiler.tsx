@@ -276,9 +276,15 @@ function SuspenseBoundaryRow({
           suspense
         </span>
 
+        {!hasReasons && (
+          <span className="suspense-profiler-status suspense-profiler-status--unnecessary">
+            unnecessary
+          </span>
+        )}
+
         {hasReasons && !hasDeepReasons && (
-          <span className="suspense-profiler-status suspense-profiler-status--ok">
-            ok
+          <span className="suspense-profiler-status suspense-profiler-status--valid">
+            valid
           </span>
         )}
 

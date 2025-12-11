@@ -105,8 +105,12 @@
   color: var(--color-gray-700);
 }
 
-.suspense-profiler-status--ok {
+.suspense-profiler-status--valid {
   color: var(--color-green-900);
+}
+
+.suspense-profiler-status--unnecessary {
+  color: var(--color-amber-900);
 }
 
 .suspense-profiler-insights-btn {

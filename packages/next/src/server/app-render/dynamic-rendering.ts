@@ -597,6 +597,14 @@ export function annotateDynamicAccess(
 }
 
 export function useDynamicRouteParams(expression: string) {
+  // Track for suspense profiler in dev
+  if (process.env.NODE_ENV !== 'production') {
+    const ownerStack = React.captureOwnerStack
+      ? React.captureOwnerStack()
+      : null
+    trackDynamicAPIAccess(expression, ownerStack)
+  }
+
   const workStore = workAsyncStorage.getStore()
   const workUnitStore = workUnitAsyncStorage.getStore()
   if (workStore && workUnitStore) {
@@ -650,6 +658,14 @@ export function useDynamicRouteParams(expression: string) {
 }
 
 export function useDynamicSearchParams(expression: string) {
+  // Track for suspense profiler in dev
+  if (process.env.NODE_ENV !== 'production') {
+    const ownerStack = React.captureOwnerStack
+      ? React.captureOwnerStack()
+      : null
+    trackDynamicAPIAccess(expression, ownerStack)
+  }
+
   const workStore = workAsyncStorage.getStore()
   const workUnitStore = workUnitAsyncStorage.getStore()
 
