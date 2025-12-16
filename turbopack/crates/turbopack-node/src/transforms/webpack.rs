@@ -11,8 +11,8 @@ use serde_with::serde_as;
 use tracing::Instrument;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
-    Completion, NonLocalValue, OperationValue, OperationVc, ResolvedVc, TaskInput, TryJoinIterExt,
-    ValueToString, Vc, trace::TraceRawVcs,
+    Completion, NonLocalValue, OperationValue, OperationVc, ReadRef, ResolvedVc, TaskInput,
+    TryJoinIterExt, ValueToString, Vc, trace::TraceRawVcs,
 };
 use turbo_tasks_env::ProcessEnv;
 use turbo_tasks_fs::{
@@ -106,6 +106,21 @@ pub struct WebpackLoaderItem {
 #[derive(Debug, Clone)]
 #[turbo_tasks::value(shared, transparent)]
 pub struct WebpackLoaderItems(pub Vec<WebpackLoaderItem>);
+
+impl std::fmt::Display for WebpackLoaderItems {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        let mut iter = self.0.iter();
+
+        if let Some(first) = iter.next() {
+            write!(f, "{}", first.loader)?;
+            for remaining in iter {
+                write!(f, ", {}", remaining.loader)?;
+            }
+        }
+
+        Ok(())
+    }
+}
 
 #[turbo_tasks::value]
 pub struct WebpackLoaders {
@@ -274,12 +289,7 @@ impl WebpackLoadersProcessedAsset {
 
         let span = tracing::info_span!(
             "webpack loader",
-            name = display(
-                loaders
-                    .get(0)
-                    .map(|i| &i.loader)
-                    .unwrap_or(&rcstr!("unknown loader"))
-            )
+            name = display(ReadRef::<WebpackLoaderItems>::as_raw_ref(&loaders))
         );
         let config_value = async {
             evaluate_webpack_loader(WebpackLoaderContext {
