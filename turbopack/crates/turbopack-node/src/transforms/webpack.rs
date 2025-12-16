@@ -8,6 +8,7 @@ use futures::try_join;
 use serde::{Deserialize, Serialize};
 use serde_json::{Map as JsonMap, Value as JsonValue, json};
 use serde_with::serde_as;
+use tracing::Instrument;
 use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{
     Completion, NonLocalValue, OperationValue, OperationVc, ResolvedVc, TaskInput, TryJoinIterExt,
@@ -270,24 +271,38 @@ impl WebpackLoadersProcessedAsset {
             ));
         };
         let loaders = transform.loaders.await?;
-        let config_value = evaluate_webpack_loader(WebpackLoaderContext {
-            entries,
-            cwd: project_path.clone(),
-            env: *env,
-            context_source_for_issue: this.source,
-            chunking_context: *chunking_context,
-            module_graph,
-            resolve_options_context: Some(transform.resolve_options_context),
-            args: vec![
-                ResolvedVc::cell(content),
-                // We need to pass the query string to the loader
-                ResolvedVc::cell(resource_path.to_string().into()),
-                ResolvedVc::cell(this.source.ident().await?.query.to_string().into()),
-                ResolvedVc::cell(json!(*loaders)),
-                ResolvedVc::cell(transform.source_maps.into()),
-            ],
-            additional_invalidation: Completion::immutable().to_resolved().await?,
-        })
+
+        let span = tracing::info_span!(
+            "webpack loader",
+            name = display(
+                loaders
+                    .get(0)
+                    .map(|i| &i.loader)
+                    .unwrap_or(&rcstr!("unknown loader"))
+            )
+        );
+        let config_value = async {
+            evaluate_webpack_loader(WebpackLoaderContext {
+                entries,
+                cwd: project_path.clone(),
+                env: *env,
+                context_source_for_issue: this.source,
+                chunking_context: *chunking_context,
+                module_graph,
+                resolve_options_context: Some(transform.resolve_options_context),
+                args: vec![
+                    ResolvedVc::cell(content),
+                    // We need to pass the query string to the loader
+                    ResolvedVc::cell(resource_path.to_string().into()),
+                    ResolvedVc::cell(this.source.ident().await?.query.to_string().into()),
+                    ResolvedVc::cell(json!(*loaders)),
+                    ResolvedVc::cell(transform.source_maps.into()),
+                ],
+                additional_invalidation: Completion::immutable().to_resolved().await?,
+            })
+            .await
+        }
+        .instrument(span)
         .await?;
 
         let Some(val) = &*config_value else {
