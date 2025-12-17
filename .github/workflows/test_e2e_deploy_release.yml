@@ -78,7 +78,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/8, 2/8, 3/8, 4/8, 5/8, 6/8, 7/8, 8/8]
+        group: [1/4, 2/4, 3/4, 4/4]
     with:
       afterBuild: |
         npm i -g vercel@latest && \
@@ -105,7 +105,7 @@ jobs:
     strategy:
       fail-fast: false
       matrix:
-        group: [1/8, 2/8, 3/8, 4/8, 5/8, 6/8, 7/8, 8/8]
+        group: [1/4, 2/4, 3/4, 4/4]
     with:
       afterBuild: |
         npm i -g vercel@latest && \
