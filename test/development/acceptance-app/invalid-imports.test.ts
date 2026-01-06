@@ -98,6 +98,84 @@ describe('Error Overlay invalid imports', () => {
     }
   })
 
+  it('should show error when require-ing client-only in server component', async () => {
+    await using sandbox = await createSandbox(
+      next,
+      new Map([
+        [
+          'app/foo.js',
+          outdent`
+            require("client-only")
+          `,
+        ],
+        [
+          'app/page.js',
+          outdent`
+            'use client'
+            import './foo'
+
+            export default function Page() {
+              return "Hello"
+            }
+          `,
+        ],
+      ])
+    )
+    const { session } = sandbox
+    const pageFile = 'app/page.js'
+    const content = await next.readFile(pageFile)
+    const withoutUseClient = content.replace("'use client'", '')
+    await session.patch(pageFile, withoutUseClient)
+
+    await session.waitForRedbox()
+    if (process.env.IS_TURBOPACK_TEST) {
+      expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
+       "./app/foo.js (1:1)
+       Module not found: Can't resolve 'client-only'
+       > 1 | require("client-only")
+           | ^^^^^^^^^^^^^^^^^^^^^^
+
+       'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Debug info:
+       - Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+       - Execution of resolve failed
+       - Execution of resolve_internal failed
+       - 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+       Import map: 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Import trace:
+         Server Component:
+           ./app/foo.js
+           ./app/page.js
+
+       https://nextjs.org/docs/messages/module-not-found"
+      `)
+    } else if (process.env.NEXT_RSPACK) {
+      expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
+       "./app/foo.js
+         × 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+         │ 
+         │ The error was caused by importing 'next/dist/compiled/client-only/error.js' in './app/foo.js'.
+         │ 
+         │ Import trace for requested module:
+       │   ./app/foo.js
+       │   ./app/page.js"
+      `)
+    } else {
+      expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
+       "./app/foo.js
+       'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       The error was caused by importing 'next/dist/compiled/client-only/error.js' in './app/foo.js'.
+
+       Import trace for requested module:
+       ./app/foo.js
+       ./app/page.js"
+      `)
+    }
+  })
+
   it('should show error when external package imports client-only in server component', async () => {
     await using sandbox = await createSandbox(
       next,
