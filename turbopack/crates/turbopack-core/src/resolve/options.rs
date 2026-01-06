@@ -116,6 +116,7 @@ pub enum ImportMapping {
     Empty,
     Alternatives(Vec<ResolvedVc<ImportMapping>>),
     Dynamic(ResolvedVc<Box<dyn ImportMappingReplacement>>),
+    Error(ResolvedVc<RcStr>),
 }
 
 /// An `ImportMapping` that was applied to a pattern. See `ImportMapping` for
@@ -141,6 +142,7 @@ pub enum ReplacedImportMapping {
     Empty,
     Alternatives(Vec<ResolvedVc<ReplacedImportMapping>>),
     Dynamic(ResolvedVc<Box<dyn ImportMappingReplacement>>),
+    Error(ResolvedVc<RcStr>),
 }
 
 impl ImportMapping {
@@ -219,6 +221,7 @@ impl AliasTemplate for Vc<ImportMapping> {
                         .await?,
                 ),
                 ImportMapping::Dynamic(replacement) => ReplacedImportMapping::Dynamic(*replacement),
+                ImportMapping::Error(message) => ReplacedImportMapping::Error(*message),
             }
             .resolved_cell())
         })
@@ -293,6 +296,7 @@ impl AliasTemplate for Vc<ImportMapping> {
                         .owned()
                         .await?
                 }
+                ImportMapping::Error(message) => ReplacedImportMapping::Error(*message),
             }
             .resolved_cell())
         })
@@ -415,6 +419,7 @@ pub enum ImportMapResult {
     Alias(ResolvedVc<Request>, Option<FileSystemPath>),
     Alternatives(Vec<ImportMapResult>),
     NoEntry,
+    Error(ResolvedVc<RcStr>),
 }
 
 async fn import_mapping_to_result(
@@ -489,6 +494,7 @@ async fn import_mapping_to_result(
         ReplacedImportMapping::Dynamic(replacement) => {
             replacement.result(lookup_path, request).owned().await?
         }
+        ReplacedImportMapping::Error(message) => ImportMapResult::Error(*message),
     })
 }
 
@@ -526,6 +532,43 @@ impl ValueToString for ImportMapResult {
                 Ok(Vc::cell(strings.join(" | ").into()))
             }
             ImportMapResult::NoEntry => Ok(Vc::cell(rcstr!("No import map entry"))),
+            ImportMapResult::Error(message) => {
+                // TODO this currently prints way too much via emit_resolve_error_issue
+                /*
+                Error: Turbopack build failed with 1 errors:
+                ./bench/basic-app/app/page.js:3:1
+                Module not found: Can't resolve 'server-only'
+                  1 | 'use client'
+                  2 |
+                > 3 | require('server-only')
+                    | ^^^^^^^^^^^^^^^^^^^^^^
+                  4 |
+                  5 | export default function Page() {
+                  6 |   return <h1>My Page</h1>
+
+                'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+
+                Debug info:
+                - Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+                - Execution of resolve failed
+                - Execution of resolve_internal failed
+                - 'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+                Import map: Import map error: 'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+
+
+                Import traces:
+                  Client Component Browser:
+                    ./bench/basic-app/app/page.js [Client Component Browser]
+                    ./bench/basic-app/app/page.js [Server Component]
+
+                  Client Component SSR:
+                    ./bench/basic-app/app/page.js [Client Component SSR]
+                    ./bench/basic-app/app/page.js [Server Component]
+
+                https://nextjs.org/docs/messages/module-not-found
+                */
+                Ok(Vc::cell(format!("{}", message.await?).into()))
+            }
         }
     }
 }

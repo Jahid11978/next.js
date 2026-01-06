@@ -154,59 +154,6 @@ impl BeforeResolvePlugin for InvalidImportResolvePlugin {
     }
 }
 
-/// Returns a resolve plugin if context have imports to `client-only`.
-/// Only the contexts that aliases `client-only` to
-/// `next/dist/compiled/client-only/error` should use this.
-pub(crate) fn get_invalid_client_only_resolve_plugin(
-    root: FileSystemPath,
-) -> Vc<InvalidImportResolvePlugin> {
-    InvalidImportResolvePlugin::new(
-        root,
-        rcstr!("client-only"),
-        vec![
-            "'client-only' cannot be imported from a Server Component module. It should only be \
-             used from a Client Component."
-                .into(),
-        ],
-    )
-}
-
-/// Returns a resolve plugin if context have imports to `server-only`.
-/// Only the contexts that aliases `server-only` to
-/// `next/dist/compiled/server-only/index` should use this.
-pub(crate) fn get_invalid_server_only_resolve_plugin(
-    root: FileSystemPath,
-) -> Vc<InvalidImportResolvePlugin> {
-    InvalidImportResolvePlugin::new(
-        root,
-        rcstr!("server-only"),
-        vec![
-            "'server-only' cannot be imported from a Client Component module. It should only be \
-             used from a Server Component."
-                .into(),
-        ],
-    )
-}
-
-/// Returns a resolve plugin if context have imports to `styled-jsx`.
-pub(crate) fn get_invalid_styled_jsx_resolve_plugin(
-    root: FileSystemPath,
-) -> Vc<InvalidImportResolvePlugin> {
-    InvalidImportResolvePlugin::new(
-        root,
-        rcstr!("styled-jsx"),
-        vec![
-            "'client-only' cannot be imported from a Server Component module. It should only be \
-             used from a Client Component."
-                .into(),
-            "The error was caused by using 'styled-jsx'. It only works in a Client Component but \
-             none of its parents are marked with \"use client\", so they're Server Components by \
-             default."
-                .into(),
-        ],
-    )
-}
-
 #[turbo_tasks::value]
 pub(crate) struct NextExternalResolvePlugin {
     project_path: FileSystemPath,

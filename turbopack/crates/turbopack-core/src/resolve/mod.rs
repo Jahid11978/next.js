@@ -2960,6 +2960,7 @@ async fn resolve_import_map_result(
             Some(merge_results(results.into_iter().flatten().collect()))
         }
         ImportMapResult::NoEntry => None,
+        ImportMapResult::Error(message) => return Err(anyhow::anyhow!(message.await?)),
     })
 }
 

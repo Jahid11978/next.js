@@ -279,6 +279,8 @@ pub async fn get_next_client_import_map(
     insert_turbopack_dev_alias(&mut import_map).await?;
     insert_instrumentation_client_alias(&mut import_map, project_path).await?;
 
+    insert_server_only_error_alias(&mut import_map);
+
     Ok(import_map.cell())
 }
 
@@ -403,6 +405,30 @@ pub async fn get_next_server_import_map(
             );
         }
         ServerContextType::Middleware { .. } | ServerContextType::Instrumentation { .. } => {}
+    }
+
+    // Inject resolve plugin to assert incorrect import to client|server-only for
+    // the corresponding context. Refer https://github.com/vercel/next.js/blob/ad15817f0368ba154bed6d85320335d4b67b7348/packages/next/src/build/webpack-config.ts#L1205-L1235
+    // how it is applied in the webpack config.
+    // Unlike webpack which alias client-only -> runtime code -> build-time error
+    // code, we use resolve plugin to detect original import directly. This
+    // means each resolve plugin must be injected only for the context where the
+    // alias resolves into the error. The alias lives in here: https://github.com/vercel/next.js/blob/0060de1c4905593ea875fa7250d4b5d5ce10897d/packages/next-swc/crates/next-core/src/next_import_map.rs#L534
+    match ty {
+        ServerContextType::Pages { .. } | ServerContextType::PagesApi { .. } => {
+            //noop
+        }
+        ServerContextType::AppRSC { .. }
+        | ServerContextType::AppRoute { .. }
+        | ServerContextType::Middleware { .. }
+        | ServerContextType::Instrumentation { .. } => {
+            insert_client_only_error_alias(&mut import_map);
+            insert_styled_jsx_error_alias(&mut import_map);
+        }
+        ServerContextType::AppSSR { .. } => {
+            //[TODO] Build error in this context makes rsc-build-error.ts fail which expects runtime error code
+            // looks like webpack and turbopack have different order, webpack runs rsc transform first, turbopack triggers resolve plugin first.
+        }
     }
 
     insert_next_server_special_aliases(
@@ -548,6 +574,17 @@ pub async fn get_next_edge_import_map(
         | ServerContextType::PagesApi { .. } => {
             insert_unsupported_node_internal_aliases(&mut import_map).await?;
         }
+    }
+
+    if matches!(
+        ty,
+        ServerContextType::AppRSC { .. }
+            | ServerContextType::AppRoute { .. }
+            | ServerContextType::Middleware { .. }
+            | ServerContextType::Instrumentation { .. }
+    ) {
+        insert_client_only_error_alias(&mut import_map);
+        insert_styled_jsx_error_alias(&mut import_map);
     }
 
     Ok(import_map.cell())
@@ -1454,6 +1491,40 @@ async fn insert_instrumentation_client_alias(
     );
 
     Ok(())
+}
+
+fn insert_client_only_error_alias(import_map: &mut ImportMap) {
+    import_map.insert_exact_alias(
+        rcstr!("client-only"),
+        ImportMapping::Error(ResolvedVc::cell(rcstr!(
+            "'client-only' cannot be imported from a Server Component module. It should only be \
+             used from a Client Component."
+        )))
+        .resolved_cell(),
+    );
+}
+
+fn insert_server_only_error_alias(import_map: &mut ImportMap) {
+    import_map.insert_exact_alias(
+        rcstr!("server-only"),
+        ImportMapping::Error(ResolvedVc::cell(rcstr!(
+            "'server-only' cannot be imported from a Client Component module. It should only be \
+             used from a Server Component."
+        )))
+        .resolved_cell(),
+    );
+}
+
+fn insert_styled_jsx_error_alias(import_map: &mut ImportMap) {
+    import_map.insert_exact_alias(
+        rcstr!("styled-jsx"),
+        ImportMapping::Error(ResolvedVc::cell(rcstr!(
+            "'styled-jsx' cannot be imported from a Server Component module. It only works in a \
+             Client Component but none of its parents are marked with \"use client\", so they're \
+             Server Components by default."
+        )))
+        .resolved_cell(),
+    );
 }
 
 // To alias e.g. both `import "next/link"` and `import "next/link.js"`
