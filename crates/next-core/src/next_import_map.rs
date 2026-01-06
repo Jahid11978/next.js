@@ -422,7 +422,6 @@ pub async fn get_next_server_import_map(
         | ServerContextType::AppRoute { .. }
         | ServerContextType::Middleware { .. }
         | ServerContextType::Instrumentation { .. } => {
-            insert_client_only_error_alias(&mut import_map);
             insert_styled_jsx_error_alias(&mut import_map);
         }
         ServerContextType::AppSSR { .. } => {
@@ -802,11 +801,11 @@ async fn insert_next_server_special_aliases(
                 project_path.clone(),
                 fxindexmap! {
                     rcstr!("server-only") => rcstr!("next/dist/compiled/server-only/empty"),
-                    rcstr!("client-only") => rcstr!("next/dist/compiled/client-only/error"),
                     rcstr!("next/dist/compiled/server-only") => rcstr!("next/dist/compiled/server-only/empty"),
                     rcstr!("next/dist/compiled/client-only") => rcstr!("next/dist/compiled/client-only/error"),
                 },
             );
+            insert_client_only_error_alias(import_map);
         }
         ServerContextType::AppSSR { .. } => {
             insert_exact_alias_map(
