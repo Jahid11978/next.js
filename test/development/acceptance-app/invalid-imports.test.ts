@@ -66,10 +66,32 @@ describe('Error Overlay invalid imports', () => {
     await session.waitForRedbox()
     if (process.env.IS_TURBOPACK_TEST) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
-        "./app
-        Invalid import
-        'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
-        The error was caused by using 'styled-jsx'. It only works in a Client Component but none of its parents are marked with "use client", so they're Server Components by default."
+       "./node_modules/.pnpm/styled-jsx@5.1.6_react@19.2.3/node_modules/styled-jsx/dist/index/index.js (1:1)
+       Module not found: Can't resolve 'client-only'
+       > 1 | require('client-only');
+           | ^^^^^^^^^^^^^^^^^^^^^^
+         2 | var React = require('react');
+         3 |
+         4 | function _interopDefaultLegacy (e) { return e && typeof e === 'object' && 'default' in e ? e : { 'default': e }; }
+
+       'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Debug info:
+       - Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+       - Execution of resolve failed
+       - Execution of resolve_internal failed
+       - 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+       Import map: 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Import trace:
+         Server Component:
+           ./node_modules/.pnpm/styled-jsx@5.1.6_react@19.2.3/node_modules/styled-jsx/dist/index/index.js
+           ./node_modules/.pnpm/styled-jsx@5.1.6_react@19.2.3/node_modules/styled-jsx/style.js
+           ./app/comp2.js
+           ./app/comp1.js
+           ./app/page.js
+
+       https://nextjs.org/docs/messages/module-not-found"
       `)
     } else if (process.env.NEXT_RSPACK) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
@@ -238,10 +260,28 @@ describe('Error Overlay invalid imports', () => {
     await session.waitForRedbox()
     if (process.env.IS_TURBOPACK_TEST) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
-        "./node_modules/client-only-package
-        Invalid import
-        'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
-        The error was caused by importing 'node_modules/client-only-package'"
+       "./node_modules/client-only-package/index.js (1:1)
+       Module not found: Can't resolve 'client-only'
+       > 1 | require("client-only")
+           | ^^^^^^^^^^^^^^^^^^^^^^
+
+       'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Debug info:
+       - Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+       - Execution of resolve failed
+       - Execution of resolve_internal failed
+       - 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+       Import map: 'client-only' cannot be imported from a Server Component module. It should only be used from a Client Component.
+
+       Import trace:
+         Server Component:
+           ./node_modules/client-only-package/index.js
+           ./app/comp2.js
+           ./app/comp1.js
+           ./app/page.js
+
+       https://nextjs.org/docs/messages/module-not-found"
       `)
     } else if (process.env.NEXT_RSPACK) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
@@ -330,10 +370,36 @@ describe('Error Overlay invalid imports', () => {
     await session.waitForRedbox()
     if (process.env.IS_TURBOPACK_TEST) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
-        "./node_modules/server-only-package
-        Invalid import
-        'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
-        The error was caused by importing 'node_modules/server-only-package'"
+       "./node_modules/server-only-package/index.js (1:1)
+       Module not found: Can't resolve 'server-only'
+       > 1 | require("server-only")
+           | ^^^^^^^^^^^^^^^^^^^^^^
+
+       'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+
+       Debug info:
+       - Execution of <ModuleAssetContext as AssetContext>::resolve_asset failed
+       - Execution of resolve failed
+       - Execution of resolve_internal failed
+       - 'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+       Import map: 'server-only' cannot be imported from a Client Component module. It should only be used from a Server Component.
+
+       Import traces:
+         Client Component Browser:
+           ./node_modules/server-only-package/index.js [Client Component Browser]
+           ./app/comp2.js [Client Component Browser]
+           ./app/comp1.js [Client Component Browser]
+           ./app/page.js [Client Component Browser]
+           ./app/page.js [Server Component]
+
+         Client Component SSR:
+           ./node_modules/server-only-package/index.js [Client Component SSR]
+           ./app/comp2.js [Client Component SSR]
+           ./app/comp1.js [Client Component SSR]
+           ./app/page.js [Client Component SSR]
+           ./app/page.js [Server Component]
+
+       https://nextjs.org/docs/messages/module-not-found"
       `)
     } else if (process.env.NEXT_RSPACK) {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
