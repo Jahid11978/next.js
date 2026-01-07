@@ -115,11 +115,14 @@ pub enum ImportMapping {
     /// the original request if it fails. Useful for the tsconfig.json
     /// `compilerOptions.paths` option and Next aliases.
     PrimaryAlternative(RcStr, Option<FileSystemPath>),
+    /// See [`ResolveResultItem::Ignore`]
     Ignore,
+    /// See [`ResolveResultItem::Empty`]
     Empty,
+    /// See [`ResolveResultItem::Error`]
+    Error(ResolvedVc<Box<dyn Issue>>),
     Alternatives(Vec<ResolvedVc<ImportMapping>>),
     Dynamic(ResolvedVc<Box<dyn ImportMappingReplacement>>),
-    Error(ResolvedVc<Box<dyn Issue>>),
 }
 
 /// An `ImportMapping` that was applied to a pattern. See `ImportMapping` for

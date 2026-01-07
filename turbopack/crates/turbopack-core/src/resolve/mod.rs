@@ -80,8 +80,11 @@ pub enum ModuleResolveResultItem {
     },
     /// A module could not be created (according to the rules, e.g. no module type as assigned)
     Unknown(ResolvedVc<Box<dyn Source>>),
+    /// Completely ignore this reference.
     Ignore,
+    /// Emit the given issue, and generate a module which throws that issue's title at runtime.
     Error(ResolvedVc<Box<dyn Issue>>),
+    /// Resolve the reference to an empty module.
     Empty,
     Custom(u8),
 }
@@ -469,8 +472,11 @@ pub enum ResolveResultItem {
         /// root to be able to access potentially transitive dependencies.
         target: Option<FileSystemPath>,
     },
+    /// Completely ignore this reference.
     Ignore,
+    /// Emit the given issue, and generate a module which throws that issue's title at runtime.
     Error(ResolvedVc<Box<dyn Issue>>),
+    /// Resolve the reference to an empty module.
     Empty,
     Custom(u8),
 }
