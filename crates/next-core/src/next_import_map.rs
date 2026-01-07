@@ -7,7 +7,7 @@ use turbo_rcstr::{RcStr, rcstr};
 use turbo_tasks::{FxIndexMap, ResolvedVc, Vc, fxindexmap};
 use turbo_tasks_fs::{FileSystem, FileSystemPath, to_sys_path};
 use turbopack_core::{
-    issue::{Issue, IssueExt, IssueSeverity, IssueStage, StyledString},
+    issue::{Issue, IssueExt, IssueSeverity, IssueStage, OptionStyledString, StyledString},
     reference_type::{CommonJsReferenceSubType, ReferenceType},
     resolve::{
         AliasPattern, ExternalTraced, ExternalType, ResolveAliasMap, SubpathValue,
@@ -1495,10 +1495,24 @@ async fn insert_instrumentation_client_alias(
 fn insert_client_only_error_alias(import_map: &mut ImportMap) {
     import_map.insert_exact_alias(
         rcstr!("client-only"),
-        ImportMapping::Error(ResolvedVc::cell(rcstr!(
-            "'client-only' cannot be imported from a Server Component module. It should only be \
-             used from a Client Component."
-        )))
+        ImportMapping::Error(ResolvedVc::upcast(
+            InvalidImportIssue {
+                title: StyledString::Line(vec![
+                    StyledString::Code(rcstr!("'client-only'")),
+                    StyledString::Text(rcstr!(
+                        " cannot be imported from a Server Component module"
+                    )),
+                ])
+                .resolved_cell(),
+                description: ResolvedVc::cell(Some(
+                    StyledString::Line(vec![StyledString::Text(
+                        "It should only be imported from a Client Component.".into(),
+                    )])
+                    .resolved_cell(),
+                )),
+            }
+            .resolved_cell(),
+        ))
         .resolved_cell(),
     );
 }
@@ -1506,10 +1520,24 @@ fn insert_client_only_error_alias(import_map: &mut ImportMap) {
 fn insert_server_only_error_alias(import_map: &mut ImportMap) {
     import_map.insert_exact_alias(
         rcstr!("server-only"),
-        ImportMapping::Error(ResolvedVc::cell(rcstr!(
-            "'server-only' cannot be imported from a Client Component module. It should only be \
-             used from a Server Component."
-        )))
+        ImportMapping::Error(ResolvedVc::upcast(
+            InvalidImportIssue {
+                title: StyledString::Line(vec![
+                    StyledString::Code(rcstr!("'server-only'")),
+                    StyledString::Text(rcstr!(
+                        " cannot be imported from a Client Component module"
+                    )),
+                ])
+                .resolved_cell(),
+                description: ResolvedVc::cell(Some(
+                    StyledString::Line(vec![StyledString::Text(
+                        "It should only be imported from a Server Component.".into(),
+                    )])
+                    .resolved_cell(),
+                )),
+            }
+            .resolved_cell(),
+        ))
         .resolved_cell(),
     );
 }
@@ -1517,13 +1545,54 @@ fn insert_server_only_error_alias(import_map: &mut ImportMap) {
 fn insert_styled_jsx_error_alias(import_map: &mut ImportMap) {
     import_map.insert_exact_alias(
         rcstr!("styled-jsx"),
-        ImportMapping::Error(ResolvedVc::cell(rcstr!(
-            "'styled-jsx' cannot be imported from a Server Component module. It only works in a \
-             Client Component but none of its parents are marked with \"use client\", so they're \
-             Server Components by default."
-        )))
+        ImportMapping::Error(ResolvedVc::upcast(
+            InvalidImportIssue {
+                title: StyledString::Line(vec![
+                    StyledString::Code(rcstr!("'styled-jsx'")),
+                    StyledString::Text(rcstr!(
+                        " cannot be imported from a Server Component module"
+                    )),
+                ])
+                .resolved_cell(),
+                description: ResolvedVc::cell(None),
+            }
+            .resolved_cell(),
+        ))
         .resolved_cell(),
     );
+}
+
+#[turbo_tasks::value(shared)]
+struct InvalidImportIssue {
+    title: ResolvedVc<StyledString>,
+    description: ResolvedVc<OptionStyledString>,
+}
+
+#[turbo_tasks::value_impl]
+impl Issue for InvalidImportIssue {
+    fn severity(&self) -> IssueSeverity {
+        IssueSeverity::Error
+    }
+
+    #[turbo_tasks::function]
+    fn file_path(&self) -> Vc<FileSystemPath> {
+        panic!("InvalidImportIssue::file_path should not be called");
+    }
+
+    #[turbo_tasks::function]
+    fn stage(self: Vc<Self>) -> Vc<IssueStage> {
+        IssueStage::Resolve.cell()
+    }
+
+    #[turbo_tasks::function]
+    fn title(&self) -> Vc<StyledString> {
+        *self.title
+    }
+
+    #[turbo_tasks::function]
+    fn description(&self) -> Vc<OptionStyledString> {
+        *self.description
+    }
 }
 
 // To alias e.g. both `import "next/link"` and `import "next/link.js"`

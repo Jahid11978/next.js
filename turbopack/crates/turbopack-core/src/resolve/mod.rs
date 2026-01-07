@@ -28,7 +28,8 @@ use crate::{
     data_uri_source::DataUriSource,
     file_source::FileSource,
     issue::{
-        IssueExt, IssueSource, module::emit_unknown_module_type_error, resolve::ResolvingIssue,
+        Issue, IssueExt, IssueSource, module::emit_unknown_module_type_error,
+        resolve::ResolvingIssue,
     },
     module::{Module, Modules, OptionModule},
     output::{OutputAsset, OutputAssets},
@@ -80,7 +81,7 @@ pub enum ModuleResolveResultItem {
     /// A module could not be created (according to the rules, e.g. no module type as assigned)
     Unknown(ResolvedVc<Box<dyn Source>>),
     Ignore,
-    Error(ResolvedVc<RcStr>),
+    Error(ResolvedVc<Box<dyn Issue>>),
     Empty,
     Custom(u8),
 }
@@ -276,6 +277,13 @@ impl ModuleResolveResult {
     pub fn is_unresolvable_ref(&self) -> bool {
         self.primary.is_empty()
     }
+
+    pub fn errors(&self) -> impl Iterator<Item = ResolvedVc<Box<dyn Issue>>> + '_ {
+        self.primary.iter().filter_map(|i| match &i.1 {
+            ModuleResolveResultItem::Error(e) => Some(*e),
+            _ => None,
+        })
+    }
 }
 
 pub struct ModuleResolveResultBuilder {
@@ -462,7 +470,7 @@ pub enum ResolveResultItem {
         target: Option<FileSystemPath>,
     },
     Ignore,
-    Error(ResolvedVc<RcStr>),
+    Error(ResolvedVc<Box<dyn Issue>>),
     Empty,
     Custom(u8),
 }
@@ -649,6 +657,13 @@ impl ResolveResult {
             primary: vec![(request_key, ResolveResultItem::Source(source))].into_boxed_slice(),
             affecting_sources: affecting_sources.into_boxed_slice(),
         }
+    }
+
+    pub fn errors(&self) -> impl Iterator<Item = ResolvedVc<Box<dyn Issue>>> + '_ {
+        self.primary.iter().filter_map(|i| match &i.1 {
+            ResolveResultItem::Error(e) => Some(*e),
+            _ => None,
+        })
     }
 }
 
@@ -2960,7 +2975,9 @@ async fn resolve_import_map_result(
             Some(merge_results(results.into_iter().flatten().collect()))
         }
         ImportMapResult::NoEntry => None,
-        ImportMapResult::Error(message) => return Err(anyhow::anyhow!(message.await?)),
+        ImportMapResult::Error(issue) => {
+            Some(*ResolveResult::primary(ResolveResultItem::Error(*issue)))
+        }
     })
 }
 

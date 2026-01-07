@@ -73,7 +73,7 @@ pub async fn get_swc_ecma_transform_rule_impl(
     use turbopack_core::{
         asset::Asset,
         reference_type::{CommonJsReferenceSubType, ReferenceType},
-        resolve::{handle_resolve_error, parse::Request, resolve},
+        resolve::{error::handle_resolve_error, parse::Request, resolve},
     };
     use turbopack_ecmascript_plugins::transform::swc_ecma_transform_plugins::{
         SwcEcmaTransformPluginsTransformer, SwcPluginModule,

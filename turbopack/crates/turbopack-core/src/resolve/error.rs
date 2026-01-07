@@ -1,9 +1,14 @@
 use anyhow::Result;
-use turbo_tasks::Vc;
+use turbo_rcstr::RcStr;
+use turbo_tasks::{IntoTraitRef, ResolvedVc, Vc};
+use turbo_tasks_fs::FileSystemPath;
 
 use crate::{
     error::PrettyPrintError,
-    issue::{IssueExt, IssueSeverity, IssueSource, resolve::ResolvingIssue},
+    issue::{
+        Issue, IssueExt, IssueSeverity, IssueSource, IssueStage, OptionIssueSource,
+        OptionStyledString, StyledString, resolve::ResolvingIssue,
+    },
     reference_type::ReferenceType,
     resolve::{
         ModuleResolveResult, ResolveResult, options::ResolveOptions, origin::ResolveOrigin,
@@ -33,6 +38,8 @@ pub async fn handle_resolve_error(
                 )
                 .await?;
             }
+
+            handle_item_issues(result_ref.errors(), origin, source).await?;
 
             result
         }
@@ -75,6 +82,8 @@ pub async fn handle_resolve_source_error(
                 .await?;
             }
 
+            handle_item_issues(result_ref.errors(), origin, source).await?;
+
             result
         }
         Err(err) => {
@@ -91,6 +100,28 @@ pub async fn handle_resolve_source_error(
             *ResolveResult::unresolvable()
         }
     })
+}
+
+async fn handle_item_issues(
+    items: impl Iterator<Item = ResolvedVc<Box<dyn Issue>>>,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    source: Option<IssueSource>,
+) -> Result<()> {
+    let mut items = items.peekable();
+    if items.peek().is_some() {
+        let file_path = origin.origin_path().owned().await?;
+        for item in items {
+            ResolvingIssueWithLocation {
+                inner: item,
+                severity: item.into_trait_ref().await?.severity(),
+                file_path: file_path.clone(),
+                source,
+            }
+            .resolved_cell()
+            .emit();
+        }
+    }
+    Ok(())
 }
 
 async fn emit_resolve_error_issue(
@@ -154,4 +185,55 @@ pub async fn resolve_error_severity(resolve_options: Vc<ResolveOptions>) -> Resu
     } else {
         IssueSeverity::Error
     })
+}
+
+/// Delegates to the inner issue but overrides the file path and source information.
+#[turbo_tasks::value(shared)]
+pub struct ResolvingIssueWithLocation {
+    pub inner: ResolvedVc<Box<dyn Issue>>,
+    pub severity: IssueSeverity,
+    pub file_path: FileSystemPath,
+    pub source: Option<IssueSource>,
+}
+
+#[turbo_tasks::value_impl]
+impl Issue for ResolvingIssueWithLocation {
+    fn severity(&self) -> IssueSeverity {
+        self.severity
+    }
+
+    #[turbo_tasks::function]
+    fn file_path(&self) -> Vc<FileSystemPath> {
+        self.file_path.clone().cell()
+    }
+
+    #[turbo_tasks::function]
+    fn stage(&self) -> Vc<IssueStage> {
+        self.inner.stage()
+    }
+
+    #[turbo_tasks::function]
+    fn title(&self) -> Vc<StyledString> {
+        self.inner.title()
+    }
+
+    #[turbo_tasks::function]
+    fn description(&self) -> Vc<OptionStyledString> {
+        self.inner.description()
+    }
+
+    #[turbo_tasks::function]
+    fn detail(&self) -> Vc<OptionStyledString> {
+        self.inner.detail()
+    }
+
+    #[turbo_tasks::function]
+    fn documentation_link(&self) -> Vc<RcStr> {
+        self.inner.documentation_link()
+    }
+
+    #[turbo_tasks::function]
+    fn source(&self) -> Vc<OptionIssueSource> {
+        Vc::cell(self.source)
+    }
 }
