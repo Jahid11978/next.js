@@ -11,7 +11,7 @@ use turbo_tasks_fs::{
 use turbopack_core::{
     diagnostics::DiagnosticExt,
     file_source::FileSource,
-    issue::{Issue, IssueExt, IssueSeverity, IssueStage, OptionStyledString, StyledString},
+    issue::{Issue, IssueSeverity, IssueStage, OptionStyledString, StyledString},
     reference_type::ReferenceType,
     resolve::{
         ExternalTraced, ExternalType, ResolveResult, ResolveResultItem, ResolveResultOption,
