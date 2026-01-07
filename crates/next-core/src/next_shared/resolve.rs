@@ -101,59 +101,6 @@ impl Issue for InvalidImportModuleIssue {
     }
 }
 
-/// A resolver plugin emits an error when specific context imports
-/// specified import requests. It doesn't detect if the import is correctly
-/// aliased or not unlike webpack-config does; Instead it should be correctly
-/// configured when each context sets up its resolve options.
-#[turbo_tasks::value]
-pub(crate) struct InvalidImportResolvePlugin {
-    root: FileSystemPath,
-    invalid_import: RcStr,
-    message: Vec<RcStr>,
-}
-
-#[turbo_tasks::value_impl]
-impl InvalidImportResolvePlugin {
-    #[turbo_tasks::function]
-    pub fn new(root: FileSystemPath, invalid_import: RcStr, message: Vec<RcStr>) -> Vc<Self> {
-        InvalidImportResolvePlugin {
-            root,
-            invalid_import,
-            message,
-        }
-        .cell()
-    }
-}
-
-#[turbo_tasks::value_impl]
-impl BeforeResolvePlugin for InvalidImportResolvePlugin {
-    #[turbo_tasks::function]
-    fn before_resolve_condition(&self) -> Vc<BeforeResolvePluginCondition> {
-        BeforeResolvePluginCondition::from_modules(Vc::cell(vec![self.invalid_import.clone()]))
-    }
-
-    #[turbo_tasks::function]
-    fn before_resolve(
-        &self,
-        lookup_path: FileSystemPath,
-        _reference_type: ReferenceType,
-        _request: Vc<Request>,
-    ) -> Vc<ResolveResultOption> {
-        InvalidImportModuleIssue {
-            file_path: lookup_path,
-            messages: self.message.clone(),
-            // styled-jsx specific resolve error has its own message
-            skip_context_message: self.invalid_import == "styled-jsx",
-        }
-        .resolved_cell()
-        .emit();
-
-        ResolveResultOption::some(*ResolveResult::primary(ResolveResultItem::Error(
-            ResolvedVc::cell(self.message.join("\n").into()),
-        )))
-    }
-}
-
 #[turbo_tasks::value]
 pub(crate) struct NextExternalResolvePlugin {
     project_path: FileSystemPath,
