@@ -1,0 +1,157 @@
+use anyhow::Result;
+use turbo_tasks::Vc;
+
+use crate::{
+    error::PrettyPrintError,
+    issue::{IssueExt, IssueSeverity, IssueSource, resolve::ResolvingIssue},
+    reference_type::ReferenceType,
+    resolve::{
+        ModuleResolveResult, ResolveResult, options::ResolveOptions, origin::ResolveOrigin,
+        parse::Request,
+    },
+};
+
+pub async fn handle_resolve_error(
+    result: Vc<ModuleResolveResult>,
+    reference_type: ReferenceType,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    request: Vc<Request>,
+    resolve_options: Vc<ResolveOptions>,
+    is_optional: bool,
+    source: Option<IssueSource>,
+) -> Result<Vc<ModuleResolveResult>> {
+    Ok(match result.await {
+        Ok(result_ref) => {
+            if result_ref.is_unresolvable_ref() {
+                emit_unresolvable_issue(
+                    is_optional,
+                    origin,
+                    reference_type,
+                    request,
+                    resolve_options,
+                    source,
+                )
+                .await?;
+            }
+
+            result
+        }
+        Err(err) => {
+            emit_resolve_error_issue(
+                is_optional,
+                origin,
+                reference_type,
+                request,
+                resolve_options,
+                err,
+                source,
+            )
+            .await?;
+            *ModuleResolveResult::unresolvable()
+        }
+    })
+}
+
+pub async fn handle_resolve_source_error(
+    result: Vc<ResolveResult>,
+    reference_type: ReferenceType,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    request: Vc<Request>,
+    resolve_options: Vc<ResolveOptions>,
+    is_optional: bool,
+    source: Option<IssueSource>,
+) -> Result<Vc<ResolveResult>> {
+    Ok(match result.await {
+        Ok(result_ref) => {
+            if result_ref.is_unresolvable_ref() {
+                emit_unresolvable_issue(
+                    is_optional,
+                    origin,
+                    reference_type,
+                    request,
+                    resolve_options,
+                    source,
+                )
+                .await?;
+            }
+
+            result
+        }
+        Err(err) => {
+            emit_resolve_error_issue(
+                is_optional,
+                origin,
+                reference_type,
+                request,
+                resolve_options,
+                err,
+                source,
+            )
+            .await?;
+            *ResolveResult::unresolvable()
+        }
+    })
+}
+
+async fn emit_resolve_error_issue(
+    is_optional: bool,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    reference_type: ReferenceType,
+    request: Vc<Request>,
+    resolve_options: Vc<ResolveOptions>,
+    err: anyhow::Error,
+    source: Option<IssueSource>,
+) -> Result<()> {
+    let severity = if is_optional || resolve_options.await?.loose_errors {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Error
+    };
+    ResolvingIssue {
+        severity,
+        file_path: origin.origin_path().owned().await?,
+        request_type: format!("{reference_type} request"),
+        request: request.to_resolved().await?,
+        resolve_options: resolve_options.to_resolved().await?,
+        error_message: Some(format!("{}", PrettyPrintError(&err))),
+        source,
+    }
+    .resolved_cell()
+    .emit();
+    Ok(())
+}
+
+async fn emit_unresolvable_issue(
+    is_optional: bool,
+    origin: Vc<Box<dyn ResolveOrigin>>,
+    reference_type: ReferenceType,
+    request: Vc<Request>,
+    resolve_options: Vc<ResolveOptions>,
+    source: Option<IssueSource>,
+) -> Result<()> {
+    let severity = if is_optional || resolve_options.await?.loose_errors {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Error
+    };
+    ResolvingIssue {
+        severity,
+        file_path: origin.origin_path().owned().await?,
+        request_type: format!("{reference_type} request"),
+        request: request.to_resolved().await?,
+        resolve_options: resolve_options.to_resolved().await?,
+        error_message: None,
+        source,
+    }
+    .resolved_cell()
+    .emit();
+    Ok(())
+}
+
+pub async fn resolve_error_severity(resolve_options: Vc<ResolveOptions>) -> Result<IssueSeverity> {
+    Ok(if resolve_options.await?.loose_errors {
+        IssueSeverity::Warning
+    } else {
+        IssueSeverity::Error
+    })
+}

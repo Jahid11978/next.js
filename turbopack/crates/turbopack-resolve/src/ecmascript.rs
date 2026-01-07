@@ -5,7 +5,8 @@ use turbopack_core::{
     issue::IssueSource,
     reference_type::{CommonJsReferenceSubType, EcmaScriptModulesReferenceSubType, ReferenceType},
     resolve::{
-        ModuleResolveResult, ResolveResult, handle_resolve_error, handle_resolve_source_error,
+        ModuleResolveResult, ResolveResult,
+        error::{handle_resolve_error, handle_resolve_source_error},
         options::{
             ConditionValue, ResolutionConditions, ResolveInPackage, ResolveIntoPackage,
             ResolveOptions,

@@ -37,6 +37,7 @@ use crate::{
     reference_type::ReferenceType,
     resolve::{
         alias_map::AliasKey,
+        error::{handle_resolve_error, resolve_error_severity},
         node::{node_cjs_resolve_options, node_esm_resolve_options},
         options::{
             ConditionValue, ImportMapResult, ResolveInPackage, ResolveIntoPackage, ResolveModules,
@@ -52,6 +53,7 @@ use crate::{
 };
 
 mod alias_map;
+pub mod error;
 pub mod node;
 pub mod options;
 pub mod origin;
@@ -64,8 +66,6 @@ pub use alias_map::{
     AliasMap, AliasMapIntoIter, AliasMapLookupIterator, AliasMatch, AliasPattern, AliasTemplate,
 };
 pub use remap::{ResolveAliasMap, SubpathValue};
-
-use crate::{error::PrettyPrintError, issue::IssueSeverity};
 
 #[turbo_tasks::value(shared)]
 #[derive(Clone, Debug)]
@@ -1950,7 +1950,7 @@ async fn resolve_internal_inline(
 
                 if !has_alias {
                     ResolvingIssue {
-                        severity: error_severity(options).await?,
+                        severity: resolve_error_severity(options).await?,
                         request_type: "server relative import: not implemented yet".to_string(),
                         request: relative.to_resolved().await?,
                         file_path: lookup_path.clone(),
@@ -1980,7 +1980,7 @@ async fn resolve_internal_inline(
             } => {
                 if !has_alias {
                     ResolvingIssue {
-                        severity: error_severity(options).await?,
+                        severity: resolve_error_severity(options).await?,
                         request_type: "windows import: not implemented yet".to_string(),
                         request: request.to_resolved().await?,
                         file_path: lookup_path.clone(),
@@ -2072,7 +2072,7 @@ async fn resolve_internal_inline(
             Request::Unknown { path } => {
                 if !has_alias {
                     ResolvingIssue {
-                        severity: error_severity(options).await?,
+                        severity: resolve_error_severity(options).await?,
                         request_type: format!("unknown import: `{}`", path.describe_as_string()),
                         request: request.to_resolved().await?,
                         file_path: lookup_path.clone(),
@@ -2608,7 +2608,7 @@ async fn apply_in_package(
         }
 
         ResolvingIssue {
-            severity: error_severity(options).await?,
+            severity: resolve_error_severity(options).await?,
             file_path: package_json_path.clone(),
             request_type: format!("alias field ({field})"),
             request: Request::parse(Pattern::Constant(request))
@@ -3163,7 +3163,7 @@ async fn resolve_package_internal_with_imports_field(
     // https://github.com/nodejs/node/blob/1b177932/lib/internal/modules/esm/resolve.js#L615-L619
     if specifier == "#" || specifier.starts_with("#/") || specifier.ends_with('/') {
         ResolvingIssue {
-            severity: error_severity(resolve_options).await?,
+            severity: resolve_error_severity(resolve_options).await?,
             file_path: file_path.clone(),
             request_type: format!("package imports request: `{specifier}`"),
             request: request.to_resolved().await?,
@@ -3193,154 +3193,6 @@ async fn resolve_package_internal_with_imports_field(
         RcStr::default(),
     )
     .await
-}
-
-pub async fn handle_resolve_error(
-    result: Vc<ModuleResolveResult>,
-    reference_type: ReferenceType,
-    origin: Vc<Box<dyn ResolveOrigin>>,
-    request: Vc<Request>,
-    resolve_options: Vc<ResolveOptions>,
-    is_optional: bool,
-    source: Option<IssueSource>,
-) -> Result<Vc<ModuleResolveResult>> {
-    Ok(match result.await {
-        Ok(result_ref) => {
-            if result_ref.is_unresolvable_ref() {
-                emit_unresolvable_issue(
-                    is_optional,
-                    origin,
-                    reference_type,
-                    request,
-                    resolve_options,
-                    source,
-                )
-                .await?;
-            }
-
-            result
-        }
-        Err(err) => {
-            emit_resolve_error_issue(
-                is_optional,
-                origin,
-                reference_type,
-                request,
-                resolve_options,
-                err,
-                source,
-            )
-            .await?;
-            *ModuleResolveResult::unresolvable()
-        }
-    })
-}
-
-pub async fn handle_resolve_source_error(
-    result: Vc<ResolveResult>,
-    reference_type: ReferenceType,
-    origin: Vc<Box<dyn ResolveOrigin>>,
-    request: Vc<Request>,
-    resolve_options: Vc<ResolveOptions>,
-    is_optional: bool,
-    source: Option<IssueSource>,
-) -> Result<Vc<ResolveResult>> {
-    async fn is_unresolvable(result: Vc<ResolveResult>) -> Result<bool> {
-        Ok(*result.resolve().await?.is_unresolvable().await?)
-    }
-    Ok(match is_unresolvable(result).await {
-        Ok(unresolvable) => {
-            if unresolvable {
-                emit_unresolvable_issue(
-                    is_optional,
-                    origin,
-                    reference_type,
-                    request,
-                    resolve_options,
-                    source,
-                )
-                .await?;
-            }
-
-            result
-        }
-        Err(err) => {
-            emit_resolve_error_issue(
-                is_optional,
-                origin,
-                reference_type,
-                request,
-                resolve_options,
-                err,
-                source,
-            )
-            .await?;
-            *ResolveResult::unresolvable()
-        }
-    })
-}
-
-async fn emit_resolve_error_issue(
-    is_optional: bool,
-    origin: Vc<Box<dyn ResolveOrigin>>,
-    reference_type: ReferenceType,
-    request: Vc<Request>,
-    resolve_options: Vc<ResolveOptions>,
-    err: anyhow::Error,
-    source: Option<IssueSource>,
-) -> Result<()> {
-    let severity = if is_optional || resolve_options.await?.loose_errors {
-        IssueSeverity::Warning
-    } else {
-        IssueSeverity::Error
-    };
-    ResolvingIssue {
-        severity,
-        file_path: origin.origin_path().owned().await?,
-        request_type: format!("{reference_type} request"),
-        request: request.to_resolved().await?,
-        resolve_options: resolve_options.to_resolved().await?,
-        error_message: Some(format!("{}", PrettyPrintError(&err))),
-        source,
-    }
-    .resolved_cell()
-    .emit();
-    Ok(())
-}
-
-async fn emit_unresolvable_issue(
-    is_optional: bool,
-    origin: Vc<Box<dyn ResolveOrigin>>,
-    reference_type: ReferenceType,
-    request: Vc<Request>,
-    resolve_options: Vc<ResolveOptions>,
-    source: Option<IssueSource>,
-) -> Result<()> {
-    let severity = if is_optional || resolve_options.await?.loose_errors {
-        IssueSeverity::Warning
-    } else {
-        IssueSeverity::Error
-    };
-    ResolvingIssue {
-        severity,
-        file_path: origin.origin_path().owned().await?,
-        request_type: format!("{reference_type} request"),
-        request: request.to_resolved().await?,
-        resolve_options: resolve_options.to_resolved().await?,
-        error_message: None,
-        source,
-    }
-    .resolved_cell()
-    .emit();
-    Ok(())
-}
-
-async fn error_severity(resolve_options: Vc<ResolveOptions>) -> Result<IssueSeverity> {
-    Ok(if resolve_options.await?.loose_errors {
-        IssueSeverity::Warning
-    } else {
-        IssueSeverity::Error
-    })
 }
 
 /// ModulePart represents a part of a module.
