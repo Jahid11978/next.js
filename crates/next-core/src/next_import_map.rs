@@ -407,29 +407,6 @@ pub async fn get_next_server_import_map(
         ServerContextType::Middleware { .. } | ServerContextType::Instrumentation { .. } => {}
     }
 
-    // Inject resolve plugin to assert incorrect import to client|server-only for
-    // the corresponding context. Refer https://github.com/vercel/next.js/blob/ad15817f0368ba154bed6d85320335d4b67b7348/packages/next/src/build/webpack-config.ts#L1205-L1235
-    // how it is applied in the webpack config.
-    // Unlike webpack which alias client-only -> runtime code -> build-time error
-    // code, we use resolve plugin to detect original import directly. This
-    // means each resolve plugin must be injected only for the context where the
-    // alias resolves into the error. The alias lives in here: https://github.com/vercel/next.js/blob/0060de1c4905593ea875fa7250d4b5d5ce10897d/packages/next-swc/crates/next-core/src/next_import_map.rs#L534
-    match ty {
-        ServerContextType::Pages { .. } | ServerContextType::PagesApi { .. } => {
-            //noop
-        }
-        ServerContextType::AppRSC { .. }
-        | ServerContextType::AppRoute { .. }
-        | ServerContextType::Middleware { .. }
-        | ServerContextType::Instrumentation { .. } => {
-            insert_styled_jsx_error_alias(&mut import_map);
-        }
-        ServerContextType::AppSSR { .. } => {
-            //[TODO] Build error in this context makes rsc-build-error.ts fail which expects runtime error code
-            // looks like webpack and turbopack have different order, webpack runs rsc transform first, turbopack triggers resolve plugin first.
-        }
-    }
-
     insert_next_server_special_aliases(
         &mut import_map,
         project_path.clone(),
@@ -583,7 +560,6 @@ pub async fn get_next_edge_import_map(
             | ServerContextType::Instrumentation { .. }
     ) {
         insert_client_only_error_alias(&mut import_map);
-        insert_styled_jsx_error_alias(&mut import_map);
     }
 
     Ok(import_map.cell())
@@ -1507,7 +1483,7 @@ fn insert_client_only_error_alias(import_map: &mut ImportMap) {
                 .resolved_cell(),
                 description: ResolvedVc::cell(Some(
                     StyledString::Line(vec![StyledString::Text(
-                        "It should only be imported from a Client Component.".into(),
+                        "It should only be used from a Client Component.".into(),
                     )])
                     .resolved_cell(),
                 )),
@@ -1516,6 +1492,30 @@ fn insert_client_only_error_alias(import_map: &mut ImportMap) {
         ))
         .resolved_cell(),
     );
+
+    // styled-jsx imports client-only. So this is effectively the same as above but produces a nicer
+    // import trace.
+    let mapping = ImportMapping::Error(ResolvedVc::upcast(
+        InvalidImportIssue {
+            title: StyledString::Line(vec![
+                StyledString::Code(rcstr!("'styled-jsx'")),
+                StyledString::Text(rcstr!(" cannot be imported from a Server Component module")),
+            ])
+            .resolved_cell(),
+            description: ResolvedVc::cell(Some(
+                StyledString::Line(vec![StyledString::Text(
+                    "It only works in a Client Component but none of its parents are marked with \
+                     'use client', so they're Server Components by default."
+                        .into(),
+                )])
+                .resolved_cell(),
+            )),
+        }
+        .resolved_cell(),
+    ))
+    .resolved_cell();
+    import_map.insert_exact_alias(rcstr!("styled-jsx"), mapping);
+    import_map.insert_wildcard_alias(rcstr!("styled-jsx/"), mapping);
 }
 
 fn insert_server_only_error_alias(import_map: &mut ImportMap) {
@@ -1532,7 +1532,7 @@ fn insert_server_only_error_alias(import_map: &mut ImportMap) {
                 .resolved_cell(),
                 description: ResolvedVc::cell(Some(
                     StyledString::Line(vec![StyledString::Text(
-                        "It should only be imported from a Server Component.".into(),
+                        "It should only be used from a Server Component.".into(),
                     )])
                     .resolved_cell(),
                 )),
@@ -1541,23 +1541,6 @@ fn insert_server_only_error_alias(import_map: &mut ImportMap) {
         ))
         .resolved_cell(),
     );
-}
-
-fn insert_styled_jsx_error_alias(import_map: &mut ImportMap) {
-    let mapping = ImportMapping::Error(ResolvedVc::upcast(
-        InvalidImportIssue {
-            title: StyledString::Line(vec![
-                StyledString::Code(rcstr!("'styled-jsx'")),
-                StyledString::Text(rcstr!(" cannot be imported from a Server Component module")),
-            ])
-            .resolved_cell(),
-            description: ResolvedVc::cell(None),
-        }
-        .resolved_cell(),
-    ))
-    .resolved_cell();
-    import_map.insert_exact_alias(rcstr!("styled-jsx"), mapping);
-    import_map.insert_wildcard_alias(rcstr!("styled-jsx/"), mapping);
 }
 
 #[turbo_tasks::value(shared)]

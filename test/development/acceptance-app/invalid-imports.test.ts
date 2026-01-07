@@ -68,6 +68,8 @@ describe('Error Overlay invalid imports', () => {
       expect(await session.getRedboxSource()).toMatchInlineSnapshot(`
        "./app/comp2.js
        'styled-jsx' cannot be imported from a Server Component module
+       It only works in a Client Component but none of its parents are marked with 'use client', so they're Server Components by default.
+
        Import trace:
          Server Component:
            ./app/comp2.js
@@ -138,7 +140,7 @@ describe('Error Overlay invalid imports', () => {
        > 1 | require("client-only")
            | ^^^^^^^^^^^^^^^^^^^^^^
 
-       It should only be imported from a Client Component.
+       It should only be used from a Client Component.
 
        Import trace:
          Server Component:
@@ -237,7 +239,7 @@ describe('Error Overlay invalid imports', () => {
        > 1 | require("client-only")
            | ^^^^^^^^^^^^^^^^^^^^^^
 
-       It should only be imported from a Client Component.
+       It should only be used from a Client Component.
 
        Import trace:
          Server Component:
@@ -338,7 +340,7 @@ describe('Error Overlay invalid imports', () => {
        > 1 | require("server-only")
            | ^^^^^^^^^^^^^^^^^^^^^^
 
-       It should only be imported from a Server Component.
+       It should only be used from a Server Component.
 
        Import traces:
          Client Component Browser:
