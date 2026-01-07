@@ -739,9 +739,7 @@ async fn insert_next_server_special_aliases(
     match &ty {
         ServerContextType::Pages { .. } | ServerContextType::PagesApi { .. } => {}
         // the logic closely follows the one in createRSCAliases in webpack-config.ts
-        ServerContextType::AppSSR { app_dir }
-        | ServerContextType::AppRSC { app_dir, .. }
-        | ServerContextType::AppRoute { app_dir, .. } => {
+        ServerContextType::AppSSR { app_dir } => {
             let next_package = get_next_package(app_dir.clone()).await?;
             import_map.insert_exact_alias(
                 rcstr!("styled-jsx"),
@@ -761,7 +759,10 @@ async fn insert_next_server_special_aliases(
             )
             .await?;
         }
-        ServerContextType::Middleware { .. } | ServerContextType::Instrumentation { .. } => {
+        ServerContextType::AppRSC { .. }
+        | ServerContextType::AppRoute { .. }
+        | ServerContextType::Middleware { .. }
+        | ServerContextType::Instrumentation { .. } => {
             rsc_aliases(
                 import_map,
                 project_path.clone(),
@@ -1543,23 +1544,20 @@ fn insert_server_only_error_alias(import_map: &mut ImportMap) {
 }
 
 fn insert_styled_jsx_error_alias(import_map: &mut ImportMap) {
-    import_map.insert_exact_alias(
-        rcstr!("styled-jsx"),
-        ImportMapping::Error(ResolvedVc::upcast(
-            InvalidImportIssue {
-                title: StyledString::Line(vec![
-                    StyledString::Code(rcstr!("'styled-jsx'")),
-                    StyledString::Text(rcstr!(
-                        " cannot be imported from a Server Component module"
-                    )),
-                ])
-                .resolved_cell(),
-                description: ResolvedVc::cell(None),
-            }
+    let mapping = ImportMapping::Error(ResolvedVc::upcast(
+        InvalidImportIssue {
+            title: StyledString::Line(vec![
+                StyledString::Code(rcstr!("'styled-jsx'")),
+                StyledString::Text(rcstr!(" cannot be imported from a Server Component module")),
+            ])
             .resolved_cell(),
-        ))
+            description: ResolvedVc::cell(None),
+        }
         .resolved_cell(),
-    );
+    ))
+    .resolved_cell();
+    import_map.insert_exact_alias(rcstr!("styled-jsx"), mapping);
+    import_map.insert_wildcard_alias(rcstr!("styled-jsx/"), mapping);
 }
 
 #[turbo_tasks::value(shared)]
