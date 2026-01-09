@@ -11,15 +11,15 @@ use napi::{
 };
 use napi_derive::napi;
 use next_api::{
-    entrypoints::Entrypoints,
+    entrypoints::{Entrypoints, is_deferred_entry},
     next_server_nft::next_server_nft_assets,
     operation::{
         EntrypointsOperation, InstrumentationOperation, MiddlewareOperation, OptionEndpoint,
         RouteOperation,
     },
     project::{
-        DefineEnv, DraftModeOptions, PartialProjectOptions, Project, ProjectContainer,
-        ProjectOptions, WatchOptions,
+        DefineEnv, DeferredEntriesFilter, DraftModeOptions, PartialProjectOptions, Project,
+        ProjectContainer, ProjectOptions, WatchOptions,
     },
     route::Endpoint,
     routes_hashes_manifest::routes_hashes_manifest_asset_if_enabled,
@@ -752,6 +752,9 @@ pub struct NapiRoute {
     pub html_endpoint: Option<External<ExternalEndpoint>>,
     pub rsc_endpoint: Option<External<ExternalEndpoint>>,
     pub data_endpoint: Option<External<ExternalEndpoint>>,
+
+    /// Whether this route is deferred (should wait for other entries to compile first)
+    pub deferred: bool,
 }
 
 impl NapiRoute {
@@ -759,6 +762,7 @@ impl NapiRoute {
         pathname: String,
         value: RouteOperation,
         turbopack_ctx: &NextTurbopackContext,
+        deferred_entries: &[RcStr],
     ) -> Self {
         let convert_endpoint = |endpoint: OperationVc<OptionEndpoint>| {
             Some(External::new(ExternalEndpoint(DetachedVc::new(
@@ -766,6 +770,7 @@ impl NapiRoute {
                 endpoint,
             ))))
         };
+        let deferred = is_deferred_entry(&pathname, deferred_entries);
         match value {
             RouteOperation::Page {
                 html_endpoint,
@@ -775,12 +780,14 @@ impl NapiRoute {
                 r#type: "page",
                 html_endpoint: convert_endpoint(html_endpoint),
                 data_endpoint: convert_endpoint(data_endpoint),
+                deferred,
                 ..Default::default()
             },
             RouteOperation::PageApi { endpoint } => NapiRoute {
                 pathname,
                 r#type: "page-api",
                 endpoint: convert_endpoint(endpoint),
+                deferred,
                 ..Default::default()
             },
             RouteOperation::AppPage(pages) => NapiRoute {
@@ -796,6 +803,7 @@ impl NapiRoute {
                         })
                         .collect(),
                 ),
+                deferred,
                 ..Default::default()
             },
             RouteOperation::AppRoute {
@@ -806,11 +814,13 @@ impl NapiRoute {
                 original_name: Some(original_name),
                 r#type: "app-route",
                 endpoint: convert_endpoint(endpoint),
+                deferred,
                 ..Default::default()
             },
             RouteOperation::Conflict => NapiRoute {
                 pathname,
                 r#type: "conflict",
+                deferred,
                 ..Default::default()
             },
         }
@@ -877,10 +887,13 @@ impl NapiEntrypoints {
         entrypoints: &EntrypointsOperation,
         turbopack_ctx: &NextTurbopackContext,
     ) -> Result<Self> {
+        let deferred_entries = &entrypoints.deferred_entries;
         let routes = entrypoints
             .routes
             .iter()
-            .map(|(k, v)| NapiRoute::from_route(k.to_string(), v.clone(), turbopack_ctx))
+            .map(|(k, v)| {
+                NapiRoute::from_route(k.to_string(), v.clone(), turbopack_ctx, deferred_entries)
+            })
             .collect();
         let middleware = entrypoints
             .middleware
@@ -1011,15 +1024,138 @@ pub async fn project_write_all_entrypoints_to_disk(
     })
 }
 
+/// Writes only non-deferred entrypoints to disk.
+/// This should be called first, followed by the onBeforeDeferredEntries callback,
+/// and then project_write_deferred_entrypoints_to_disk.
+#[tracing::instrument(level = "info", name = "write non-deferred entrypoints to disk", skip_all)]
+#[napi]
+pub async fn project_write_non_deferred_entrypoints_to_disk(
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    app_dir_only: bool,
+) -> napi::Result<TurbopackResult<Option<NapiEntrypoints>>> {
+    let ctx = &project.turbopack_ctx;
+    let container = project.container;
+    let tt = ctx.turbo_tasks();
+
+    let (entrypoints, issues, diags) = tt
+        .run(async move {
+            let entrypoints_with_issues_op = get_filtered_written_entrypoints_with_issues_operation(
+                container,
+                app_dir_only,
+                DeferredEntriesFilter::NonDeferredOnly,
+            );
+
+            let AllWrittenEntrypointsWithIssues {
+                entrypoints,
+                issues,
+                diagnostics,
+                effects,
+            } = &*entrypoints_with_issues_op
+                .read_strongly_consistent()
+                .await?;
+
+            effects.apply().await?;
+
+            Ok((entrypoints.clone(), issues.clone(), diagnostics.clone()))
+        })
+        .or_else(|e| ctx.throw_turbopack_internal_result(&e.into()))
+        .await?;
+
+    Ok(TurbopackResult {
+        result: if let Some(entrypoints) = entrypoints {
+            Some(NapiEntrypoints::from_entrypoints_op(
+                &entrypoints,
+                &project.turbopack_ctx,
+            )?)
+        } else {
+            None
+        },
+        issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
+        diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+    })
+}
+
+/// Writes only deferred entrypoints to disk.
+/// This should be called after project_write_non_deferred_entrypoints_to_disk
+/// and the onBeforeDeferredEntries callback.
+#[tracing::instrument(level = "info", name = "write deferred entrypoints to disk", skip_all)]
+#[napi]
+pub async fn project_write_deferred_entrypoints_to_disk(
+    #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
+    app_dir_only: bool,
+) -> napi::Result<TurbopackResult<Option<NapiEntrypoints>>> {
+    let ctx = &project.turbopack_ctx;
+    let container = project.container;
+    let tt = ctx.turbo_tasks();
+
+    let (entrypoints, issues, diags) = tt
+        .run(async move {
+            let entrypoints_with_issues_op = get_filtered_written_entrypoints_with_issues_operation(
+                container,
+                app_dir_only,
+                DeferredEntriesFilter::DeferredOnly,
+            );
+
+            let AllWrittenEntrypointsWithIssues {
+                entrypoints,
+                issues,
+                diagnostics,
+                effects,
+            } = &*entrypoints_with_issues_op
+                .read_strongly_consistent()
+                .await?;
+
+            effects.apply().await?;
+
+            Ok((entrypoints.clone(), issues.clone(), diagnostics.clone()))
+        })
+        .or_else(|e| ctx.throw_turbopack_internal_result(&e.into()))
+        .await?;
+
+    Ok(TurbopackResult {
+        result: if let Some(entrypoints) = entrypoints {
+            Some(NapiEntrypoints::from_entrypoints_op(
+                &entrypoints,
+                &project.turbopack_ctx,
+            )?)
+        } else {
+            None
+        },
+        issues: issues.iter().map(|i| NapiIssue::from(&**i)).collect(),
+        diagnostics: diags.iter().map(|d| NapiDiagnostic::from(d)).collect(),
+    })
+}
+
 #[turbo_tasks::function(operation)]
 async fn get_all_written_entrypoints_with_issues_operation(
     container: ResolvedVc<ProjectContainer>,
     app_dir_only: bool,
 ) -> Result<Vc<AllWrittenEntrypointsWithIssues>> {
-    let entrypoints_operation = EntrypointsOperation::new(all_entrypoints_write_to_disk_operation(
-        container,
-        app_dir_only,
-    ));
+    let entrypoints_operation =
+        EntrypointsOperation::new(all_entrypoints_write_to_disk_operation(container, app_dir_only));
+    let (entrypoints, issues, diagnostics, effects) =
+        strongly_consistent_catch_collectables(entrypoints_operation).await?;
+    Ok(AllWrittenEntrypointsWithIssues {
+        entrypoints,
+        issues,
+        diagnostics,
+        effects,
+    }
+    .cell())
+}
+
+#[turbo_tasks::function(operation)]
+async fn get_filtered_written_entrypoints_with_issues_operation(
+    container: ResolvedVc<ProjectContainer>,
+    app_dir_only: bool,
+    deferred_filter: DeferredEntriesFilter,
+) -> Result<Vc<AllWrittenEntrypointsWithIssues>> {
+    let entrypoints_operation =
+        EntrypointsOperation::new(filtered_entrypoints_write_to_disk_operation(
+            container,
+            app_dir_only,
+            deferred_filter,
+        ));
     let (entrypoints, issues, diagnostics, effects) =
         strongly_consistent_catch_collectables(entrypoints_operation).await?;
     Ok(AllWrittenEntrypointsWithIssues {
@@ -1036,14 +1172,32 @@ pub async fn all_entrypoints_write_to_disk_operation(
     project: ResolvedVc<ProjectContainer>,
     app_dir_only: bool,
 ) -> Result<Vc<Entrypoints>> {
-    let output_assets_operation = output_assets_operation(project, app_dir_only);
+    let output_assets_op = output_assets_operation(project, app_dir_only);
     project
         .project()
-        .emit_all_output_assets(output_assets_operation)
+        .emit_all_output_assets(output_assets_op)
+        .as_side_effect()
+        .await?;
+    Ok(project.entrypoints())
+}
+
+#[turbo_tasks::function(operation)]
+pub async fn filtered_entrypoints_write_to_disk_operation(
+    project: ResolvedVc<ProjectContainer>,
+    app_dir_only: bool,
+    deferred_filter: DeferredEntriesFilter,
+) -> Result<Vc<Entrypoints>> {
+    let output_assets_op =
+        filtered_output_assets_operation(project, app_dir_only, deferred_filter);
+    project
+        .project()
+        .emit_all_output_assets(output_assets_op)
         .as_side_effect()
         .await?;
 
-    Ok(project.entrypoints())
+    // Return filtered entrypoints, not unfiltered, to avoid triggering
+    // computation of all entrypoints when the caller reads the result
+    Ok(project.project().filtered_entrypoints(deferred_filter))
 }
 
 #[turbo_tasks::function(operation)]
@@ -1067,7 +1221,6 @@ async fn output_assets_operation(
         .collect();
 
     let nft = next_server_nft_assets(project).await?;
-
     let routes_hashes_manifest = routes_hashes_manifest_asset_if_enabled(project).await?;
 
     whole_app_module_graphs.as_side_effect().await?;
@@ -1079,6 +1232,53 @@ async fn output_assets_operation(
             .chain(routes_hashes_manifest.iter().copied())
             .collect(),
     ))
+}
+
+#[turbo_tasks::function(operation)]
+async fn filtered_output_assets_operation(
+    container: ResolvedVc<ProjectContainer>,
+    app_dir_only: bool,
+    deferred_filter: DeferredEntriesFilter,
+) -> Result<Vc<OutputAssets>> {
+    let project = container.project();
+    let whole_app_module_graphs = project.whole_app_module_graphs();
+    let endpoint_assets = project
+        .get_filtered_endpoints(app_dir_only, deferred_filter)
+        .await?
+        .iter()
+        .map(|endpoint| async move { endpoint.output().await?.output_assets.await })
+        .try_join()
+        .await?;
+
+    let output_assets: FxIndexSet<ResolvedVc<Box<dyn OutputAsset>>> = endpoint_assets
+        .iter()
+        .flat_map(|assets| assets.iter().copied())
+        .collect();
+
+    // NFT and routes hashes manifest are only included when not filtering for deferred only
+    // (they are global assets that should be included with non-deferred entries)
+    let include_global_assets = deferred_filter != DeferredEntriesFilter::DeferredOnly;
+
+    let mut all_assets: Vec<ResolvedVc<Box<dyn OutputAsset>>> = output_assets.into_iter().collect();
+
+    if include_global_assets {
+        let nft = next_server_nft_assets(project).await?;
+        all_assets.extend(nft.iter().copied());
+
+        let routes_hashes_manifest = routes_hashes_manifest_asset_if_enabled(project).await?;
+        all_assets.extend(routes_hashes_manifest.iter().copied());
+    }
+
+    // whole_app_module_graphs processes ALL modules in the app, which would trigger
+    // compilation of deferred entries. Only call it during:
+    // - DeferredOnly phase (after the callback, when deferred entries should be compiled)
+    // - All phase (no phased compilation, compile everything at once)
+    // Do NOT call it during NonDeferredOnly phase to avoid compiling deferred entries early.
+    if deferred_filter != DeferredEntriesFilter::NonDeferredOnly {
+        whole_app_module_graphs.as_side_effect().await?;
+    }
+
+    Ok(Vc::cell(all_assets))
 }
 
 #[tracing::instrument(level = "info", name = "get entrypoints", skip_all)]

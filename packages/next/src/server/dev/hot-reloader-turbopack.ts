@@ -336,6 +336,53 @@ export async function createHotReloaderTurbopack(
 
   const assetMapper = new AssetMapper()
 
+  // Deferred entries state management
+  const deferredEntriesConfig = nextConfig.experimental.deferredEntries
+  const hasDeferredEntriesConfig =
+    deferredEntriesConfig && deferredEntriesConfig.length > 0
+  let onBeforeDeferredEntriesCalled = false
+  let onBeforeDeferredEntriesPromise: Promise<void> | null = null
+
+  // Function to wait for all non-deferred entries to be built
+  async function waitForNonDeferredEntries(): Promise<void> {
+    // In turbopack, entries are built on-demand, so we wait for the current
+    // entrypoints handling to complete which means initial entrypoints are processed
+    await currentEntriesHandling
+  }
+
+  // Reset deferred entries state for a new HMR cycle
+  function resetDeferredEntriesState(): void {
+    onBeforeDeferredEntriesCalled = false
+    onBeforeDeferredEntriesPromise = null
+  }
+
+  // Call the onBeforeDeferredEntries callback
+  async function callOnBeforeDeferredEntries(): Promise<void> {
+    if (!hasDeferredEntriesConfig) return
+    if (!nextConfig.experimental.onBeforeDeferredEntries) return
+
+    if (!onBeforeDeferredEntriesCalled) {
+      onBeforeDeferredEntriesCalled = true
+      onBeforeDeferredEntriesPromise =
+        nextConfig.experimental.onBeforeDeferredEntries()
+      await onBeforeDeferredEntriesPromise
+    } else if (onBeforeDeferredEntriesPromise) {
+      // Wait for any in-progress callback
+      await onBeforeDeferredEntriesPromise
+    }
+  }
+
+  // Function to handle deferred entry processing
+  async function processDeferredEntry(): Promise<void> {
+    if (!hasDeferredEntriesConfig) return
+
+    // Wait for initial entrypoints to be processed
+    await waitForNonDeferredEntries()
+
+    // Call the onBeforeDeferredEntries callback
+    await callOnBeforeDeferredEntries()
+  }
+
   function clearRequireCache(
     key: EntryKey,
     writtenEndpoint: WrittenEndpoint,
@@ -1410,6 +1457,11 @@ export async function createHotReloaderTurbopack(
             throw new Error(`mis-matched route type: isApp && page for ${page}`)
           }
 
+          // Check if this is a deferred entry and wait for non-deferred entries first
+          if (hasDeferredEntriesConfig && route.deferred) {
+            await processDeferredEntry()
+          }
+
           const finishBuilding = startBuilding(pathname, requestUrl, false)
           try {
             await handleRouteType({
@@ -1475,10 +1527,20 @@ export async function createHotReloaderTurbopack(
       switch (updateMessage.updateType) {
         case 'start': {
           hotReloader.send({ type: HMR_MESSAGE_SENT_TO_BROWSER.BUILDING })
+          // Reset deferred entries state for this update cycle
+          // This ensures onBeforeDeferredEntries will be called again
+          resetDeferredEntriesState()
           break
         }
         case 'end': {
           sendEnqueuedMessages()
+
+          // Call onBeforeDeferredEntries during any update cycle (HMR or hot-update)
+          // This is needed because the callback might generate code that deferred entries depend on
+          // We always call it on 'end' since we reset state on 'start'
+          if (hasDeferredEntriesConfig) {
+            await callOnBeforeDeferredEntries()
+          }
 
           function addToErrorsMap(
             errorsMap: Map<string, CompilationError>,

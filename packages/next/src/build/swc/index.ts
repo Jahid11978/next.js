@@ -523,6 +523,8 @@ function bindingToApi(
 
   type NapiRoute = {
     pathname: string
+    /** Whether this route is deferred (should wait for other entries to compile first) */
+    deferred: boolean
   } & (
     | {
         type: 'page'
@@ -700,6 +702,48 @@ function bindingToApi(
         this._nativeProject,
         appDirOnly
       )) as TurbopackResult<Partial<NapiEntrypoints>>
+
+      if ('routes' in napiEndpoints) {
+        return napiEntrypointsToRawEntrypoints(
+          napiEndpoints as TurbopackResult<NapiEntrypoints>
+        )
+      } else {
+        return {
+          issues: napiEndpoints.issues,
+          diagnostics: napiEndpoints.diagnostics,
+        }
+      }
+    }
+
+    async writeNonDeferredEntrypointsToDisk(
+      appDirOnly: boolean
+    ): Promise<TurbopackResult<Partial<RawEntrypoints>>> {
+      const napiEndpoints =
+        (await binding.projectWriteNonDeferredEntrypointsToDisk(
+          this._nativeProject,
+          appDirOnly
+        )) as TurbopackResult<Partial<NapiEntrypoints>>
+
+      if ('routes' in napiEndpoints) {
+        return napiEntrypointsToRawEntrypoints(
+          napiEndpoints as TurbopackResult<NapiEntrypoints>
+        )
+      } else {
+        return {
+          issues: napiEndpoints.issues,
+          diagnostics: napiEndpoints.diagnostics,
+        }
+      }
+    }
+
+    async writeDeferredEntrypointsToDisk(
+      appDirOnly: boolean
+    ): Promise<TurbopackResult<Partial<RawEntrypoints>>> {
+      const napiEndpoints =
+        (await binding.projectWriteDeferredEntrypointsToDisk(
+          this._nativeProject,
+          appDirOnly
+        )) as TurbopackResult<Partial<NapiEntrypoints>>
 
       if ('routes' in napiEndpoints) {
         return napiEntrypointsToRawEntrypoints(
@@ -1055,12 +1099,14 @@ function bindingToApi(
             type: 'page',
             htmlEndpoint: new EndpointImpl(nativeRoute.htmlEndpoint),
             dataEndpoint: new EndpointImpl(nativeRoute.dataEndpoint),
+            deferred: nativeRoute.deferred,
           }
           break
         case 'page-api':
           route = {
             type: 'page-api',
             endpoint: new EndpointImpl(nativeRoute.endpoint),
+            deferred: nativeRoute.deferred,
           }
           break
         case 'app-page':
@@ -1071,6 +1117,7 @@ function bindingToApi(
               htmlEndpoint: new EndpointImpl(page.htmlEndpoint),
               rscEndpoint: new EndpointImpl(page.rscEndpoint),
             })),
+            deferred: nativeRoute.deferred,
           }
           break
         case 'app-route':
@@ -1078,11 +1125,13 @@ function bindingToApi(
             type: 'app-route',
             originalName: nativeRoute.originalName,
             endpoint: new EndpointImpl(nativeRoute.endpoint),
+            deferred: nativeRoute.deferred,
           }
           break
         case 'conflict':
           route = {
             type: 'conflict',
+            deferred: nativeRoute.deferred,
           }
           break
         default: {

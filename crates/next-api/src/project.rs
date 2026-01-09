@@ -95,6 +95,21 @@ use crate::{
     versioned_content_map::VersionedContentMap,
 };
 
+/// Filter for selecting which entries to include based on deferred status
+#[derive(
+    Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, TaskInput,
+    TraceRawVcs, NonLocalValue, OperationValue, Encode, Decode,
+)]
+pub enum DeferredEntriesFilter {
+    /// Include all entries (no filtering)
+    #[default]
+    All,
+    /// Include only non-deferred entries
+    NonDeferredOnly,
+    /// Include only deferred entries
+    DeferredOnly,
+}
+
 #[derive(
     Debug,
     Serialize,
@@ -1002,15 +1017,24 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn get_all_endpoint_groups(
+    pub fn get_all_endpoint_groups(self: Vc<Self>, app_dir_only: bool) -> Vc<EndpointGroups> {
+        self.get_filtered_endpoint_groups(app_dir_only, DeferredEntriesFilter::All)
+    }
+
+    #[turbo_tasks::function]
+    pub async fn get_filtered_endpoint_groups(
         self: Vc<Self>,
         app_dir_only: bool,
+        deferred_filter: DeferredEntriesFilter,
     ) -> Result<Vc<EndpointGroups>> {
         let mut endpoint_groups = Vec::new();
 
-        let entrypoints = self.entrypoints().await?;
+        // Use filtered_entrypoints to get routes that were filtered during creation,
+        // preventing module resolution for filtered-out routes
+        let entrypoints = self.filtered_entrypoints(deferred_filter).await?;
         let mut add_pages_entries = false;
 
+        // Middleware and instrumentation are already filtered by filtered_entrypoints
         if let Some(middleware) = &entrypoints.middleware {
             endpoint_groups.push((
                 EndpointGroupKey::Middleware,
@@ -1029,6 +1053,7 @@ impl Project {
             ));
         }
 
+        // Routes are already filtered by filtered_entrypoints
         for (key, route) in entrypoints.routes.iter() {
             match route {
                 Route::Page {
@@ -1095,7 +1120,8 @@ impl Project {
             }
         }
 
-        if add_pages_entries {
+        // Pages entries (_app, _document, _error) are never deferred
+        if add_pages_entries && deferred_filter != DeferredEntriesFilter::DeferredOnly {
             endpoint_groups.push((
                 EndpointGroupKey::PagesError,
                 EndpointGroup::from(entrypoints.pages_error_endpoint),
@@ -1114,9 +1140,22 @@ impl Project {
     }
 
     #[turbo_tasks::function]
-    pub async fn get_all_endpoints(self: Vc<Self>, app_dir_only: bool) -> Result<Vc<Endpoints>> {
+    pub fn get_all_endpoints(self: Vc<Self>, app_dir_only: bool) -> Vc<Endpoints> {
+        self.get_filtered_endpoints(app_dir_only, DeferredEntriesFilter::All)
+    }
+
+    #[turbo_tasks::function]
+    pub async fn get_filtered_endpoints(
+        self: Vc<Self>,
+        app_dir_only: bool,
+        deferred_filter: DeferredEntriesFilter,
+    ) -> Result<Vc<Endpoints>> {
         let mut endpoints = Vec::new();
-        for (_key, group) in self.get_all_endpoint_groups(app_dir_only).await?.iter() {
+        for (_key, group) in self
+            .get_filtered_endpoint_groups(app_dir_only, deferred_filter)
+            .await?
+            .iter()
+        {
             for entry in group.primary.iter() {
                 endpoints.push(entry.endpoint);
             }
@@ -1511,6 +1550,9 @@ impl Project {
             None
         };
 
+        // Get deferred entries from config
+        let deferred_entries = self.next_config().deferred_entries().await?.to_vec();
+
         Ok(Entrypoints {
             routes,
             middleware,
@@ -1518,6 +1560,138 @@ impl Project {
             pages_document_endpoint,
             pages_app_endpoint,
             pages_error_endpoint,
+            deferred_entries,
+        }
+        .cell())
+    }
+
+    /// Returns entrypoints filtered by deferred status.
+    /// This function filters routes BEFORE creating endpoints, preventing module resolution
+    /// for filtered-out routes.
+    #[turbo_tasks::function]
+    pub async fn filtered_entrypoints(
+        self: Vc<Self>,
+        deferred_filter: DeferredEntriesFilter,
+    ) -> Result<Vc<Entrypoints>> {
+        // For All filter, just return the standard entrypoints
+        if deferred_filter == DeferredEntriesFilter::All {
+            return Ok(self.entrypoints());
+        }
+
+        self.collect_project_feature_telemetry().await?;
+
+        // Get deferred entries config for the final result
+        let deferred_entries_config = self.next_config().deferred_entries().await?.to_vec();
+
+        let mut routes = FxIndexMap::default();
+        let app_project = self.app_project();
+        let pages_project = self.pages_project();
+        let deferred_entries_vc = self.next_config().deferred_entries();
+
+        // Use filtered_routes() which skips creating endpoints for filtered-out routes,
+        // preventing module resolution for those routes
+        if let Some(app_project) = &*app_project.await? {
+            let app_routes = app_project.filtered_routes(deferred_entries_vc, deferred_filter);
+            for (pathname, route) in app_routes.await?.iter() {
+                routes.insert(pathname.clone(), route.clone());
+            }
+        }
+
+        for (pathname, page_route) in pages_project
+            .filtered_routes(deferred_entries_vc, deferred_filter)
+            .await?
+            .iter()
+        {
+            match routes.entry(pathname.clone()) {
+                Entry::Occupied(mut entry) => {
+                    ConflictIssue {
+                        path: self.project_path().owned().await?,
+                        title: StyledString::Text(
+                            format!("App Router and Pages Router both match path: {pathname}")
+                                .into(),
+                        )
+                        .resolved_cell(),
+                        description: StyledString::Text(
+                            "Next.js does not support having both App Router and Pages Router \
+                             routes matching the same path. Please remove one of the conflicting \
+                             routes."
+                                .into(),
+                        )
+                        .resolved_cell(),
+                        severity: IssueSeverity::Error,
+                    }
+                    .resolved_cell()
+                    .emit();
+                    *entry.get_mut() = Route::Conflict;
+                }
+                Entry::Vacant(entry) => {
+                    entry.insert(page_route.clone());
+                }
+            }
+        }
+
+        // Pages router special endpoints (_document, _app, _error) are never deferred
+        let (pages_document_endpoint, pages_app_endpoint, pages_error_endpoint) =
+            if deferred_filter != DeferredEntriesFilter::DeferredOnly {
+                (
+                    self.pages_project()
+                        .document_endpoint()
+                        .to_resolved()
+                        .await?,
+                    self.pages_project().app_endpoint().to_resolved().await?,
+                    self.pages_project().error_endpoint().to_resolved().await?,
+                )
+            } else {
+                // For DeferredOnly, use placeholder endpoints that won't trigger compilation
+                // We still need valid ResolvedVc values, so we create them but they won't be used
+                (
+                    self.pages_project()
+                        .document_endpoint()
+                        .to_resolved()
+                        .await?,
+                    self.pages_project().app_endpoint().to_resolved().await?,
+                    self.pages_project().error_endpoint().to_resolved().await?,
+                )
+            };
+
+        // Middleware and instrumentation are never deferred
+        let middleware = if deferred_filter != DeferredEntriesFilter::DeferredOnly {
+            let middleware_result = self.find_middleware();
+            if let FindContextFileResult::Found(fs_path, _) = &*middleware_result.await? {
+                let is_proxy = fs_path.file_stem() == Some("proxy");
+                Some(Middleware {
+                    endpoint: self.middleware_endpoint().to_resolved().await?,
+                    is_proxy,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        let instrumentation = if deferred_filter != DeferredEntriesFilter::DeferredOnly {
+            let instrumentation_result = self.find_instrumentation();
+            if let FindContextFileResult::Found(..) = *instrumentation_result.await? {
+                Some(Instrumentation {
+                    node_js: self.instrumentation_endpoint(false).to_resolved().await?,
+                    edge: self.instrumentation_endpoint(true).to_resolved().await?,
+                })
+            } else {
+                None
+            }
+        } else {
+            None
+        };
+
+        Ok(Entrypoints {
+            routes,
+            middleware,
+            instrumentation,
+            pages_document_endpoint,
+            pages_app_endpoint,
+            pages_error_endpoint,
+            deferred_entries: deferred_entries_config,
         }
         .cell())
     }

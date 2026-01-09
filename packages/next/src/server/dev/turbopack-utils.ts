@@ -615,6 +615,7 @@ export async function handleEntrypoints({
           currentEntrypoints.app.set(page.originalName, {
             type: 'app-page',
             ...page,
+            deferred: route.deferred,
           })
         })
         break

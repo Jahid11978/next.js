@@ -29,6 +29,8 @@ pub struct EntrypointsOperation {
     pub pages_document_endpoint: OperationVc<OptionEndpoint>,
     pub pages_app_endpoint: OperationVc<OptionEndpoint>,
     pub pages_error_endpoint: OperationVc<OptionEndpoint>,
+    /// Paths that should be deferred until all other entries are compiled
+    pub deferred_entries: Vec<RcStr>,
 }
 
 /// Removes diagnostics, issues, and effects from the top-level `entrypoints` operation so that
@@ -70,6 +72,7 @@ impl EntrypointsOperation {
             pages_document_endpoint: pick_endpoint(entrypoints, EndpointSelector::PagesDocument),
             pages_app_endpoint: pick_endpoint(entrypoints, EndpointSelector::PagesApp),
             pages_error_endpoint: pick_endpoint(entrypoints, EndpointSelector::PagesError),
+            deferred_entries: e.deferred_entries.clone(),
         }
         .cell())
     }

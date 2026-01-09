@@ -239,6 +239,14 @@ export interface Project {
     appDirOnly: boolean
   ): Promise<TurbopackResult<Partial<RawEntrypoints>>>
 
+  writeNonDeferredEntrypointsToDisk(
+    appDirOnly: boolean
+  ): Promise<TurbopackResult<Partial<RawEntrypoints>>>
+
+  writeDeferredEntrypointsToDisk(
+    appDirOnly: boolean
+  ): Promise<TurbopackResult<Partial<RawEntrypoints>>>
+
   entrypointsSubscribe(): AsyncIterableIterator<
     TurbopackResult<RawEntrypoints | {}>
   >
@@ -277,6 +285,8 @@ export interface Project {
 export type Route =
   | {
       type: 'conflict'
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'app-page'
@@ -285,20 +295,28 @@ export type Route =
         htmlEndpoint: Endpoint
         rscEndpoint: Endpoint
       }[]
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'app-route'
       originalName: string
       endpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'page'
       htmlEndpoint: Endpoint
       dataEndpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'page-api'
       endpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
 
 export interface Endpoint {
@@ -419,10 +437,14 @@ export type PageRoute =
       type: 'page'
       htmlEndpoint: Endpoint
       dataEndpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'page-api'
       endpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
 
 export type AppRoute =
@@ -430,10 +452,14 @@ export type AppRoute =
       type: 'app-page'
       htmlEndpoint: Endpoint
       rscEndpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
   | {
       type: 'app-route'
       endpoint: Endpoint
+      /** Whether this route is deferred (should wait for other entries to compile first) */
+      deferred: boolean
     }
 
 // pathname -> route

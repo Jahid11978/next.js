@@ -274,6 +274,8 @@ export interface NapiRoute {
   htmlEndpoint?: ExternalObject<ExternalEndpoint>
   rscEndpoint?: ExternalObject<ExternalEndpoint>
   dataEndpoint?: ExternalObject<ExternalEndpoint>
+  /** Whether this route is deferred (should wait for other entries to compile first) */
+  deferred: boolean
 }
 export interface NapiMiddleware {
   endpoint: ExternalObject<ExternalEndpoint>
@@ -292,6 +294,24 @@ export interface NapiEntrypoints {
   pagesErrorEndpoint: ExternalObject<ExternalEndpoint>
 }
 export declare function projectWriteAllEntrypointsToDisk(
+  project: { __napiType: 'Project' },
+  appDirOnly: boolean
+): Promise<TurbopackResult>
+/**
+ * Writes only non-deferred entrypoints to disk.
+ * This should be called first, followed by the onBeforeDeferredEntries callback,
+ * and then project_write_deferred_entrypoints_to_disk.
+ */
+export declare function projectWriteNonDeferredEntrypointsToDisk(
+  project: { __napiType: 'Project' },
+  appDirOnly: boolean
+): Promise<TurbopackResult>
+/**
+ * Writes only deferred entrypoints to disk.
+ * This should be called after project_write_non_deferred_entrypoints_to_disk
+ * and the onBeforeDeferredEntries callback.
+ */
+export declare function projectWriteDeferredEntrypointsToDisk(
   project: { __napiType: 'Project' },
   appDirOnly: boolean
 ): Promise<TurbopackResult>

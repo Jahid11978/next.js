@@ -1007,6 +1007,9 @@ pub struct ExperimentalConfig {
     turbopack_infer_module_side_effects: Option<bool>,
     /// Devtool option for the segment explorer.
     devtool_segment_explorer: Option<bool>,
+    /// An array of paths in app or pages directories that should wait to be processed
+    /// until all other entries have been processed.
+    deferred_entries: Option<Vec<RcStr>>,
 }
 
 #[derive(
@@ -1793,6 +1796,16 @@ impl NextConfig {
         Vc::cell(
             self.experimental
                 .optimize_package_imports
+                .clone()
+                .unwrap_or_default(),
+        )
+    }
+
+    #[turbo_tasks::function]
+    pub fn deferred_entries(&self) -> Vc<Vec<RcStr>> {
+        Vc::cell(
+            self.experimental
+                .deferred_entries
                 .clone()
                 .unwrap_or_default(),
         )
