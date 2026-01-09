@@ -25,6 +25,7 @@ export async function rawEntrypointsToEntrypoints(
           app.set(p.originalName, {
             type: 'app-page',
             ...p,
+            deferred: route.deferred,
           })
         }
         break

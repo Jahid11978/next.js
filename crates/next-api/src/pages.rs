@@ -70,6 +70,7 @@ use crate::{
     dynamic_imports::{
         DynamicImportedChunks, NextDynamicChunkAvailability, collect_next_dynamic_chunks,
     },
+    entrypoints::is_deferred_entry,
     font::FontManifest,
     loadable_manifest::create_react_loadable_manifest,
     module_graph::{NextDynamicGraphs, validate_pages_css_imports},
@@ -78,7 +79,7 @@ use crate::{
         all_paths_in_root, all_server_paths, get_asset_paths_from_root, get_js_paths_from_root,
         get_wasm_paths_from_root, paths_to_bindings, wasm_paths_to_bindings,
     },
-    project::Project,
+    project::{DeferredEntriesFilter, Project},
     route::{Endpoint, EndpointOutput, EndpointOutputPaths, ModuleGraphs, Route, Routes},
     webpack_stats::generate_webpack_stats,
 };
@@ -223,6 +224,172 @@ impl PagesProject {
 
         if let Some(pages) = *pages {
             add_dir_to_routes(&mut routes, *pages, make_page_route).await?;
+        }
+
+        Ok(Vc::cell(routes))
+    }
+
+    /// Returns routes filtered by deferred status.
+    /// This skips creating endpoints for filtered-out routes, preventing module resolution.
+    #[turbo_tasks::function]
+    pub async fn filtered_routes(
+        self: Vc<Self>,
+        deferred_entries: Vc<Vec<RcStr>>,
+        deferred_filter: DeferredEntriesFilter,
+    ) -> Result<Vc<Routes>> {
+        let deferred_entries_list = deferred_entries.await?;
+        let has_deferred_config = !deferred_entries_list.is_empty();
+
+        // Helper to check if a route should be included
+        let should_include = |pathname: &str| -> bool {
+            if !has_deferred_config {
+                return true;
+            }
+            let is_deferred = is_deferred_entry(pathname, &deferred_entries_list);
+            match deferred_filter {
+                DeferredEntriesFilter::All => true,
+                DeferredEntriesFilter::NonDeferredOnly => !is_deferred,
+                DeferredEntriesFilter::DeferredOnly => is_deferred,
+            }
+        };
+
+        let pages_structure = self.pages_structure();
+        let PagesStructure {
+            api,
+            pages,
+            app: _,
+            document: _,
+            error: _,
+            error_500: _,
+            has_user_pages: _,
+            should_create_pages_entries,
+        } = &*pages_structure.await?;
+        let mut routes = FxIndexMap::default();
+
+        // If pages entries shouldn't be created (build mode with no pages), return empty routes
+        if !should_create_pages_entries {
+            return Ok(Vc::cell(routes));
+        }
+
+        async fn add_page_to_routes_filtered(
+            routes: &mut FxIndexMap<RcStr, Route>,
+            page: Vc<PagesStructureItem>,
+            make_route: impl Fn(
+                RcStr,
+                RcStr,
+                Vc<PagesStructureItem>,
+            ) -> BoxFuture<'static, Result<Route>>,
+            should_include: &impl Fn(&str) -> bool,
+        ) -> Result<()> {
+            let PagesStructureItem {
+                next_router_path,
+                original_path,
+                ..
+            } = &*page.await?;
+            let pathname: RcStr = format!("/{}", next_router_path.path).into();
+            if !should_include(&pathname) {
+                return Ok(());
+            }
+            let original_name = format!("/{}", original_path.path).into();
+            let route = make_route(pathname.clone(), original_name, page).await?;
+            routes.insert(pathname, route);
+            Ok(())
+        }
+
+        async fn add_dir_to_routes_filtered(
+            routes: &mut FxIndexMap<RcStr, Route>,
+            dir: Vc<PagesDirectoryStructure>,
+            make_route: impl Fn(
+                RcStr,
+                RcStr,
+                Vc<PagesStructureItem>,
+            ) -> BoxFuture<'static, Result<Route>>,
+            should_include: &impl Fn(&str) -> bool,
+        ) -> Result<()> {
+            let mut queue = vec![dir];
+            while let Some(dir) = queue.pop() {
+                let PagesDirectoryStructure {
+                    ref items,
+                    ref children,
+                    next_router_path: _,
+                    project_path: _,
+                } = *dir.await?;
+                for &item in items.iter() {
+                    add_page_to_routes_filtered(routes, *item, &make_route, should_include).await?;
+                }
+                for &child in children.iter() {
+                    queue.push(*child);
+                }
+            }
+            Ok(())
+        }
+
+        if let Some(api) = *api {
+            add_dir_to_routes_filtered(
+                &mut routes,
+                *api,
+                |pathname, original_name, page| {
+                    Box::pin(async move {
+                        Ok(Route::PageApi {
+                            endpoint: ResolvedVc::upcast(
+                                PageEndpoint::new(
+                                    PageEndpointType::Api,
+                                    self,
+                                    pathname,
+                                    original_name,
+                                    page,
+                                    pages_structure,
+                                )
+                                .to_resolved()
+                                .await?,
+                            ),
+                        })
+                    })
+                },
+                &should_include,
+            )
+            .await?;
+        }
+
+        let make_page_route = |pathname: RcStr, original_name: RcStr, page| -> BoxFuture<_> {
+            Box::pin(async move {
+                Ok(Route::Page {
+                    html_endpoint: ResolvedVc::upcast(
+                        PageEndpoint::new(
+                            PageEndpointType::Html,
+                            self,
+                            pathname.clone(),
+                            original_name.clone(),
+                            page,
+                            pages_structure,
+                        )
+                        .to_resolved()
+                        .await?,
+                    ),
+                    // The data endpoint is only needed in development mode to support HMR
+                    data_endpoint: if self.project().next_mode().await?.is_development() {
+                        Some(ResolvedVc::upcast(
+                            PageEndpoint::new(
+                                PageEndpointType::Data,
+                                self,
+                                pathname,
+                                original_name,
+                                page,
+                                pages_structure,
+                            )
+                            .to_resolved()
+                            .await?,
+                        ))
+                    } else {
+                        None
+                    },
+                })
+            })
+        };
+
+        if let Some(pages) = *pages {
+            add_dir_to_routes_filtered(&mut routes, *pages, make_page_route, &should_include)
+                .await?;
         }
 
         Ok(Vc::cell(routes))

@@ -74,6 +74,7 @@ use turbopack_resolve::{ecmascript::cjs_resolve, resolve_options_context::Resolv
 
 use crate::{
     dynamic_imports::{NextDynamicChunkAvailability, collect_next_dynamic_chunks},
+    entrypoints::is_deferred_entry,
     font::FontManifest,
     loadable_manifest::create_react_loadable_manifest,
     module_graph::{ClientReferencesGraphs, NextDynamicGraphs, ServerActionsGraphs},
@@ -82,7 +83,7 @@ use crate::{
         all_paths_in_root, all_server_paths, get_asset_paths_from_root, get_js_paths_from_root,
         get_wasm_paths_from_root, paths_to_bindings, wasm_paths_to_bindings,
     },
-    project::{BaseAndFullModuleGraph, Project},
+    project::{BaseAndFullModuleGraph, DeferredEntriesFilter, Project},
     route::{
         AppPageRoute, Endpoint, EndpointOutput, EndpointOutputPaths, ModuleGraphs, Route, Routes,
     },
@@ -806,6 +807,51 @@ impl AppProject {
             app_entrypoints
                 .await?
                 .iter()
+                .map(|(pathname, app_entrypoint)| async {
+                    Ok((
+                        pathname.to_string().into(),
+                        app_entry_point_to_route(self, app_entrypoint.clone())
+                            .owned()
+                            .await?,
+                    ))
+                })
+                .try_join()
+                .await?
+                .into_iter()
+                .collect(),
+        ))
+    }
+
+    /// Returns routes filtered by deferred status.
+    /// This skips creating endpoints for filtered-out routes, preventing module resolution.
+    #[turbo_tasks::function]
+    pub async fn filtered_routes(
+        self: Vc<Self>,
+        deferred_entries: Vc<Vec<RcStr>>,
+        deferred_filter: DeferredEntriesFilter,
+    ) -> Result<Vc<Routes>> {
+        let deferred_entries_list = deferred_entries.await?;
+        let has_deferred_config = !deferred_entries_list.is_empty();
+
+        // Helper to check if a route should be included
+        let should_include = |pathname: &str| -> bool {
+            if !has_deferred_config {
+                return true;
+            }
+            let is_deferred = is_deferred_entry(pathname, &deferred_entries_list);
+            match deferred_filter {
+                DeferredEntriesFilter::All => true,
+                DeferredEntriesFilter::NonDeferredOnly => !is_deferred,
+                DeferredEntriesFilter::DeferredOnly => is_deferred,
+            }
+        };
+
+        let app_entrypoints = self.app_entrypoints();
+        Ok(Vc::cell(
+            app_entrypoints
+                .await?
+                .iter()
+                .filter(|(pathname, _)| should_include(&pathname.to_string()))
                 .map(|(pathname, app_entrypoint)| async {
                     Ok((
                         pathname.to_string().into(),

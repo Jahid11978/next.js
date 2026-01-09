@@ -18,7 +18,7 @@ use next_api::{
         RouteOperation,
     },
     project::{
-        DefineEnv, DeferredEntriesFilter, DraftModeOptions, PartialProjectOptions, Project,
+        DeferredEntriesFilter, DefineEnv, DraftModeOptions, PartialProjectOptions, Project,
         ProjectContainer, ProjectOptions, WatchOptions,
     },
     route::Endpoint,
@@ -1027,7 +1027,11 @@ pub async fn project_write_all_entrypoints_to_disk(
 /// Writes only non-deferred entrypoints to disk.
 /// This should be called first, followed by the onBeforeDeferredEntries callback,
 /// and then project_write_deferred_entrypoints_to_disk.
-#[tracing::instrument(level = "info", name = "write non-deferred entrypoints to disk", skip_all)]
+#[tracing::instrument(
+    level = "info",
+    name = "write non-deferred entrypoints to disk",
+    skip_all
+)]
 #[napi]
 pub async fn project_write_non_deferred_entrypoints_to_disk(
     #[napi(ts_arg_type = "{ __napiType: \"Project\" }")] project: External<ProjectInstance>,
@@ -1131,8 +1135,10 @@ async fn get_all_written_entrypoints_with_issues_operation(
     container: ResolvedVc<ProjectContainer>,
     app_dir_only: bool,
 ) -> Result<Vc<AllWrittenEntrypointsWithIssues>> {
-    let entrypoints_operation =
-        EntrypointsOperation::new(all_entrypoints_write_to_disk_operation(container, app_dir_only));
+    let entrypoints_operation = EntrypointsOperation::new(all_entrypoints_write_to_disk_operation(
+        container,
+        app_dir_only,
+    ));
     let (entrypoints, issues, diagnostics, effects) =
         strongly_consistent_catch_collectables(entrypoints_operation).await?;
     Ok(AllWrittenEntrypointsWithIssues {
@@ -1150,12 +1156,9 @@ async fn get_filtered_written_entrypoints_with_issues_operation(
     app_dir_only: bool,
     deferred_filter: DeferredEntriesFilter,
 ) -> Result<Vc<AllWrittenEntrypointsWithIssues>> {
-    let entrypoints_operation =
-        EntrypointsOperation::new(filtered_entrypoints_write_to_disk_operation(
-            container,
-            app_dir_only,
-            deferred_filter,
-        ));
+    let entrypoints_operation = EntrypointsOperation::new(
+        filtered_entrypoints_write_to_disk_operation(container, app_dir_only, deferred_filter),
+    );
     let (entrypoints, issues, diagnostics, effects) =
         strongly_consistent_catch_collectables(entrypoints_operation).await?;
     Ok(AllWrittenEntrypointsWithIssues {
@@ -1187,8 +1190,7 @@ pub async fn filtered_entrypoints_write_to_disk_operation(
     app_dir_only: bool,
     deferred_filter: DeferredEntriesFilter,
 ) -> Result<Vc<Entrypoints>> {
-    let output_assets_op =
-        filtered_output_assets_operation(project, app_dir_only, deferred_filter);
+    let output_assets_op = filtered_output_assets_operation(project, app_dir_only, deferred_filter);
     project
         .project()
         .emit_all_output_assets(output_assets_op)

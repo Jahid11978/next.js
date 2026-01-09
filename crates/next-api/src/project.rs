@@ -97,8 +97,21 @@ use crate::{
 
 /// Filter for selecting which entries to include based on deferred status
 #[derive(
-    Debug, Clone, Copy, PartialEq, Eq, Default, Hash, Serialize, Deserialize, TaskInput,
-    TraceRawVcs, NonLocalValue, OperationValue, Encode, Decode,
+    Debug,
+    Clone,
+    Copy,
+    PartialEq,
+    Eq,
+    Default,
+    Hash,
+    Serialize,
+    Deserialize,
+    TaskInput,
+    TraceRawVcs,
+    NonLocalValue,
+    OperationValue,
+    Encode,
+    Decode,
 )]
 pub enum DeferredEntriesFilter {
     /// Include all entries (no filtering)

@@ -109,8 +109,44 @@ export async function turbopackBuild(): Promise<{
     )
 
     let appDirOnly = NextBuildContext.appDirOnly!
-    const entrypoints = await project.writeAllEntrypointsToDisk(appDirOnly)
-    printBuildErrors(entrypoints, dev)
+
+    // Check if deferred entries are configured
+    const hasDeferredEntries =
+      config.experimental.deferredEntries &&
+      config.experimental.deferredEntries.length > 0
+
+    let entrypoints: TurbopackResult<Partial<RawEntrypoints>>
+
+    if (hasDeferredEntries) {
+      // Phase 1: Write non-deferred entrypoints first
+      const nonDeferredEntrypoints =
+        await project.writeNonDeferredEntrypointsToDisk(appDirOnly)
+      printBuildErrors(nonDeferredEntrypoints, dev)
+
+      // Call onBeforeDeferredEntries callback before compiling deferred entries
+      if (config.experimental.onBeforeDeferredEntries) {
+        await config.experimental.onBeforeDeferredEntries()
+      }
+
+      // Phase 2: Write deferred entrypoints
+      const deferredEntrypoints =
+        await project.writeDeferredEntrypointsToDisk(appDirOnly)
+      printBuildErrors(deferredEntrypoints, dev)
+
+      // Merge the entrypoints from both phases
+      // Use the non-deferred result as base since it has middleware/instrumentation
+      entrypoints = {
+        ...nonDeferredEntrypoints,
+        routes: new Map([
+          ...(nonDeferredEntrypoints.routes || []),
+          ...(deferredEntrypoints.routes || []),
+        ]),
+      }
+    } else {
+      // No deferred entries - use the standard single-phase build
+      entrypoints = await project.writeAllEntrypointsToDisk(appDirOnly)
+      printBuildErrors(entrypoints, dev)
+    }
 
     let routes = entrypoints.routes
     if (!routes) {
@@ -140,11 +176,12 @@ export async function turbopackBuild(): Promise<{
       entrypoints as TurbopackResult<RawEntrypoints>
     )
 
-    const promises: Promise<void>[] = []
+    // Process all routes
+    const routePromises: Promise<void>[] = []
 
     if (!appDirOnly) {
       for (const [page, route] of currentEntrypoints.page) {
-        promises.push(
+        routePromises.push(
           handleRouteType({
             page,
             route,
@@ -155,7 +192,7 @@ export async function turbopackBuild(): Promise<{
     }
 
     for (const [page, route] of currentEntrypoints.app) {
-      promises.push(
+      routePromises.push(
         handleRouteType({
           page,
           route,
@@ -164,7 +201,7 @@ export async function turbopackBuild(): Promise<{
       )
     }
 
-    await Promise.all(promises)
+    await Promise.all(routePromises)
 
     await Promise.all([
       // Only load pages router manifests if not app-only
