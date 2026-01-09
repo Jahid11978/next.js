@@ -238,6 +238,8 @@ export type InitialRSCPayload = {
   G: [React.ComponentType<any>, React.ReactNode | undefined]
   /** prerendered */
   S: boolean
+  /** globalNotFoundPath */
+  n?: string
 }
 
 // Response from `createFromFetch` for normal rendering

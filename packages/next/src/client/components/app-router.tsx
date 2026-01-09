@@ -44,6 +44,7 @@ import { isRedirectError, RedirectType } from './redirect-error'
 import { pingVisibleLinks } from './links'
 import RootErrorBoundary from './errors/root-error-boundary'
 import DefaultGlobalError from './builtin/global-error'
+import { GlobalNotFoundBoundary } from './global-not-found-boundary'
 import { RootLayoutBoundary } from '../../lib/framework/boundary-components'
 import type { StaticIndicatorState } from '../dev/hot-reloader/app/hot-reloader-app'
 import { getDeploymentIdQueryOrEmptyString } from '../../shared/lib/deployment-id'
@@ -148,11 +149,13 @@ function Head({
 function Router({
   actionQueue,
   globalError,
+  globalNotFoundPath,
   webSocket,
   staticIndicatorState,
 }: {
   actionQueue: AppRouterActionQueue
   globalError: GlobalErrorState
+  globalNotFoundPath: string | undefined
   webSocket: WebSocket | undefined
   staticIndicatorState: StaticIndicatorState | undefined
 }) {
@@ -470,10 +473,15 @@ function Router({
   let content = (
     <RedirectBoundary>
       {head}
-      {/* RootLayoutBoundary enables detection of Suspense boundaries around the root layout.
-          When users wrap their layout in <Suspense>, this creates the component stack pattern
-          "Suspense -> RootLayoutBoundary" which dynamic-rendering.ts uses to allow dynamic rendering. */}
-      <RootLayoutBoundary>{cache.rsc}</RootLayoutBoundary>
+      {/* GlobalNotFoundBoundary catches NOT_FOUND errors that bubble up when no
+          segment-level not-found boundary handles them. It must be inside RedirectBoundary
+          so it catches errors before DevRootHTTPAccessFallbackBoundary (dev mode). */}
+      <GlobalNotFoundBoundary globalNotFoundPath={globalNotFoundPath}>
+        {/* RootLayoutBoundary enables detection of Suspense boundaries around the root layout.
+            When users wrap their layout in <Suspense>, this creates the component stack pattern
+            "Suspense -> RootLayoutBoundary" which dynamic-rendering.ts uses to allow dynamic rendering. */}
+        <RootLayoutBoundary>{cache.rsc}</RootLayoutBoundary>
+      </GlobalNotFoundBoundary>
       <AppRouterAnnouncer tree={tree} />
     </RedirectBoundary>
   )
@@ -554,11 +562,13 @@ function Router({
 export default function AppRouter({
   actionQueue,
   globalErrorState,
+  globalNotFoundPath,
   webSocket,
   staticIndicatorState,
 }: {
   actionQueue: AppRouterActionQueue
   globalErrorState: GlobalErrorState
+  globalNotFoundPath?: string
   webSocket?: WebSocket
   staticIndicatorState?: StaticIndicatorState
 }) {
@@ -568,6 +578,7 @@ export default function AppRouter({
     <Router
       actionQueue={actionQueue}
       globalError={globalErrorState}
+      globalNotFoundPath={globalNotFoundPath}
       webSocket={webSocket}
       staticIndicatorState={staticIndicatorState}
     />
