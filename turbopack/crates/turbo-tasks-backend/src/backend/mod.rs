@@ -2430,12 +2430,7 @@ impl<B: BackingStorage> TurboTasksBackendInner<B> {
 
     fn task_execution_completed_cleanup(&self, ctx: &mut impl ExecuteContext<'_>, task_id: TaskId) {
         let mut task = ctx.task(task_id, TaskDataCategory::All);
-        task.shrink_to_fit(CachedDataItemType::CellData);
-        task.shrink_to_fit(CachedDataItemType::TransientCellData);
-        task.shrink_to_fit(CachedDataItemType::CellTypeMaxIndex);
-        task.shrink_to_fit(CachedDataItemType::CellDependency);
-        task.shrink_to_fit(CachedDataItemType::OutputDependency);
-        task.shrink_to_fit(CachedDataItemType::CollectiblesDependency);
+        task.shrink_to_fit();
         drop(task);
     }
 
