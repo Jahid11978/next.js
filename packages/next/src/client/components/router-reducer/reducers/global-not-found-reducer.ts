@@ -20,6 +20,41 @@ const DynamicRequestTreeForEntireRoute: FlightRouterState = [
 ]
 
 /**
+ * Process a successful RSC response and apply it to the state.
+ */
+function applyGlobalNotFoundResponse(
+  state: ReadonlyReducerState,
+  result: Exclude<Awaited<ReturnType<typeof fetchServerResponse>>, string>,
+  mutable: Mutable
+): ReducerState {
+  const { flightData, renderedSearch } = result
+
+  // Convert the server response to a full tree
+  // Use the same tree we sent in the request
+  const navigationSeed = convertServerPatchToFullTree(
+    DynamicRequestTreeForEntireRoute,
+    flightData,
+    renderedSearch
+  )
+
+  // Create cache node directly, bypassing navigation compatibility checks
+  const { cacheNode, flightRouterState } = createCacheNodeForGlobalNotFound(
+    navigationSeed.tree,
+    navigationSeed.data,
+    navigationSeed.head
+  )
+
+  // Apply the new content without changing the URL
+  mutable.cache = cacheNode
+  mutable.patchedTree = flightRouterState
+  mutable.renderedSearch = renderedSearch
+  // Intentionally NOT setting mutable.canonicalUrl to keep the URL unchanged
+  mutable.shouldScroll = true
+
+  return handleMutable(state, mutable)
+}
+
+/**
  * Handles the ACTION_GLOBAL_NOT_FOUND action.
  * Fetches the global-not-found page and replaces the current content
  * WITHOUT changing the URL.
@@ -49,36 +84,13 @@ export function globalNotFoundReducer(
   }).then(
     (result) => {
       if (typeof result === 'string') {
-        // Server returned MPA navigation URL - this shouldn't happen for
-        // /_not-found but if it does, just return current state
+        // Server returned MPA navigation URL - this can happen if the server
+        // returned HTML instead of RSC. Return current state - the
+        // GlobalNotFoundBoundary will handle showing fallback UI.
         return state
       }
 
-      const { flightData, renderedSearch } = result
-
-      // Convert the server response to a full tree
-      // Use the same tree we sent in the request
-      const navigationSeed = convertServerPatchToFullTree(
-        DynamicRequestTreeForEntireRoute,
-        flightData,
-        renderedSearch
-      )
-
-      // Create cache node directly, bypassing navigation compatibility checks
-      const { cacheNode, flightRouterState } = createCacheNodeForGlobalNotFound(
-        navigationSeed.tree,
-        navigationSeed.data,
-        navigationSeed.head
-      )
-
-      // Apply the new content without changing the URL
-      mutable.cache = cacheNode
-      mutable.patchedTree = flightRouterState
-      mutable.renderedSearch = renderedSearch
-      // Intentionally NOT setting mutable.canonicalUrl to keep the URL unchanged
-      mutable.shouldScroll = true
-
-      return handleMutable(state, mutable)
+      return applyGlobalNotFoundResponse(state, result, mutable)
     },
     () => {
       // Fetch failed - return current state
