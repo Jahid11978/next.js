@@ -53,7 +53,6 @@ mod id;
 mod id_factory;
 mod invalidation;
 mod join_iter_ext;
-mod key_value_pair;
 #[doc(hidden)]
 pub mod macro_helpers;
 mod magic_any;
@@ -106,7 +105,6 @@ pub use crate::{
         get_invalidator,
     },
     join_iter_ext::{JoinIterExt, TryFlatJoinIterExt, TryJoinIterExt},
-    key_value_pair::KeyValuePair,
     magic_any::MagicAny,
     manager::{
         CurrentCellRef, ReadConsistency, ReadTracking, TaskPersistence, TurboTasks, TurboTasksApi,

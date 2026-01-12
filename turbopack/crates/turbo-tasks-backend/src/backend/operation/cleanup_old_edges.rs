@@ -9,7 +9,7 @@ use turbo_tasks::TaskId;
 use crate::backend::operation::invalidate::TaskDirtyCause;
 use crate::{
     backend::{
-        TaskDataCategory, get, get_many,
+        TaskDataCategory,
         operation::{
             AggregatedDataUpdate, ExecuteContext, Operation,
             aggregation_update::{
@@ -18,10 +18,9 @@ use crate::{
             },
             invalidate::make_task_dirty,
         },
-        storage::update_count,
         storage_schema::TaskStorageAccessors,
     },
-    data::{CachedDataItemKey, CellRef, CollectibleRef, CollectiblesRef},
+    data::{CellRef, CollectibleRef, CollectiblesRef},
 };
 
 #[derive(Encode, Decode, Clone, Default)]
@@ -58,7 +57,7 @@ impl CleanupOldEdgesOperation {
         task_id: TaskId,
         outdated: Vec<OutdatedEdge>,
         queue: AggregationUpdateQueue,
-        ctx: &mut impl ExecuteContext,
+        ctx: &mut impl ExecuteContext<'_>,
     ) {
         CleanupOldEdgesOperation::RemoveEdges {
             task_id,
@@ -70,7 +69,7 @@ impl CleanupOldEdgesOperation {
 }
 
 impl Operation for CleanupOldEdgesOperation {
-    fn execute(mut self, ctx: &mut impl ExecuteContext) {
+    fn execute(mut self, ctx: &mut impl ExecuteContext<'_>) {
         loop {
             ctx.operation_suspend_point(&self);
             match self {
@@ -93,7 +92,7 @@ impl Operation for CleanupOldEdgesOperation {
                                 });
                                 let mut task = ctx.task(task_id, TaskDataCategory::All);
                                 for &child_id in children.iter() {
-                                    task.remove(&CachedDataItemKey::Child { task: child_id });
+                                    task.remove_children(&child_id);
                                 }
                                 if is_aggregating_node(get_aggregation_number(&task)) {
                                     queue.push(AggregationUpdateJob::InnerOfUpperLostFollowers {
@@ -104,7 +103,8 @@ impl Operation for CleanupOldEdgesOperation {
                                 } else {
                                     let upper_ids = get_uppers(&task);
                                     let has_active_count = ctx.should_track_activeness()
-                                        && get!(task, Activeness)
+                                        && task
+                                            .get_activeness()
                                             .is_some_and(|a| a.active_counter > 0);
                                     drop(task);
                                     if has_active_count {
@@ -135,19 +135,20 @@ impl Operation for CleanupOldEdgesOperation {
                                 let mut task = ctx.task(task_id, TaskDataCategory::All);
                                 let mut emptied_collectables = FxHashSet::default();
                                 for (collectible, count) in collectibles.iter_mut() {
-                                    if update_count!(
-                                        task,
-                                        Collectible {
-                                            collectible: *collectible
-                                        },
-                                        *count
-                                    ) {
+                                    if task
+                                        .update_collectibles_positive_crossing(*collectible, *count)
+                                    {
                                         emptied_collectables.insert(collectible.collectible_type);
                                     }
                                 }
 
                                 for ty in emptied_collectables {
-                                    let task_ids = get_many!(task, CollectiblesDependent { collectible_type, task } if collectible_type == ty => { task });
+                                    let task_ids: SmallVec<[_; 4]> = task
+                                        .iter_collectibles_dependents_all()
+                                        .filter_map(|(&collectible_type, &task)| {
+                                            (collectible_type == ty).then_some(task)
+                                        })
+                                        .collect();
                                     queue.push(
                                         AggregationUpdateJob::InvalidateDueToCollectiblesChange {
                                             task_ids,
@@ -167,18 +168,13 @@ impl Operation for CleanupOldEdgesOperation {
                             }) => {
                                 {
                                     let mut task = ctx.task(cell_task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::CellDependent {
-                                        cell,
-                                        task: task_id,
-                                    });
+                                    task.remove_cell_dependents_value(&cell, &task_id);
                                 }
                                 {
                                     let mut task = ctx.task(task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::CellDependency {
-                                        target: CellRef {
-                                            task: cell_task_id,
-                                            cell,
-                                        },
+                                    task.remove_cell_dependencies(&CellRef {
+                                        task: cell_task_id,
+                                        cell,
                                     });
                                 }
                             }
@@ -192,15 +188,11 @@ impl Operation for CleanupOldEdgesOperation {
                                 .entered();
                                 {
                                     let mut task = ctx.task(output_task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::OutputDependent {
-                                        task: task_id,
-                                    });
+                                    task.remove_output_dependent(&task_id);
                                 }
                                 {
                                     let mut task = ctx.task(task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::OutputDependency {
-                                        target: output_task_id,
-                                    });
+                                    task.remove_output_dependencies(&output_task_id);
                                 }
                             }
                             OutdatedEdge::CollectiblesDependency(CollectiblesRef {
@@ -210,18 +202,16 @@ impl Operation for CleanupOldEdgesOperation {
                                 {
                                     let mut task =
                                         ctx.task(dependent_task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::CollectiblesDependent {
-                                        collectible_type,
-                                        task: task_id,
-                                    });
+                                    task.remove_collectibles_dependents_value(
+                                        &collectible_type,
+                                        &task_id,
+                                    );
                                 }
                                 {
                                     let mut task = ctx.task(task_id, TaskDataCategory::Data);
-                                    task.remove(&CachedDataItemKey::CollectiblesDependency {
-                                        target: CollectiblesRef {
-                                            collectible_type,
-                                            task: dependent_task_id,
-                                        },
+                                    task.remove_collectibles_dependencies(&CollectiblesRef {
+                                        collectible_type,
+                                        task: dependent_task_id,
                                     });
                                 }
                             }

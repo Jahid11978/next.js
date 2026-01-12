@@ -5,7 +5,7 @@ use std::{
     sync::{Arc, LazyLock, Mutex, PoisonError, Weak},
 };
 
-use anyhow::{Context, Result};
+use anyhow::{Context, Result, anyhow};
 use turbo_bincode::{
     TurboBincodeBuffer, turbo_bincode_decode, turbo_bincode_encode, turbo_bincode_encode_into,
 };
@@ -323,7 +323,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                                         WriteBuffer::Borrowed(&task_id.to_le_bytes()),
                                     )
                                     .with_context(|| {
-                                        format!(
+                                        anyhow!(
                                             "Unable to write task cache {task_type:?} => {task_id}"
                                         )
                                     })?;
@@ -334,7 +334,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                                         WriteBuffer::Borrowed(&task_type_bytes),
                                     )
                                     .with_context(|| {
-                                        format!(
+                                        anyhow!(
                                             "Unable to write task cache {task_id} => {task_type:?}"
                                         )
                                     })?;
@@ -368,14 +368,14 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                             batch
                                 .put(KeySpace::TaskMeta, WriteBuffer::Borrowed(key), meta)
                                 .with_context(|| {
-                                    format!("Unable to write meta items for {task_id}")
+                                    anyhow!("Unable to write meta items for {task_id}")
                                 })?;
                         }
                         if let Some(data) = data {
                             batch
                                 .put(KeySpace::TaskData, WriteBuffer::Borrowed(key), data)
                                 .with_context(|| {
-                                    format!("Unable to write data items for {task_id}")
+                                    anyhow!("Unable to write data items for {task_id}")
                                 })?;
                         }
                     }
@@ -410,7 +410,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                                 WriteBuffer::Borrowed(&task_id.to_le_bytes()),
                             )
                             .with_context(|| {
-                                format!("Unable to write task cache {task_type:?} => {task_id}")
+                                anyhow!("Unable to write task cache {task_type:?} => {task_id}")
                             })?;
                         batch
                             .put(
@@ -419,7 +419,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                                 WriteBuffer::Borrowed(&task_type_bytes),
                             )
                             .with_context(|| {
-                                format!("Unable to write task cache {task_id} => {task_type:?}")
+                                anyhow!("Unable to write task cache {task_id} => {task_type:?}")
                             })?;
                         next_task_id = next_task_id.max(task_id + 1);
                     }
@@ -435,7 +435,9 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
 
         {
             let _span = tracing::trace_span!("commit").entered();
-            batch.commit().context("Unable to commit operations")?;
+            batch
+                .commit()
+                .with_context(|| anyhow!("Unable to commit operations"))?;
         }
         Ok(())
     }
@@ -501,27 +503,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
             .with_context(|| format!("Looking up task type for {task_id} from database failed"))
     }
 
-    fn serialize_task_storage_meta(&self, storage: &TaskStorage) -> TurboBincodeBuffer {
-        let mut buffer = TurboBincodeBuffer::with_capacity(256);
-        let mut encoder = turbo_bincode::new_turbo_bincode_encoder(&mut buffer);
-        // Use encode_meta which handles all the field-specific encoding
-        storage
-            .encode_meta(&mut encoder)
-            .expect("Failed to encode task storage meta");
-        buffer
-    }
-
-    fn serialize_task_storage_data(&self, storage: &TaskStorage) -> TurboBincodeBuffer {
-        let mut buffer = TurboBincodeBuffer::with_capacity(256);
-        let mut encoder = turbo_bincode::new_turbo_bincode_encoder(&mut buffer);
-        // Use encode_data which handles all the field-specific encoding
-        storage
-            .encode_data(&mut encoder)
-            .expect("Failed to encode task storage data");
-        buffer
-    }
-
-    unsafe fn lookup_task_storage_meta(
+    unsafe fn lookup_typed_meta(
         &self,
         tx: Option<&T::ReadTransaction<'_>>,
         task_id: TaskId,
@@ -539,11 +521,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
             else {
                 return Ok(());
             };
-            let mut decoder = bincode::de::DecoderImpl::new(
-                turbo_bincode::TurboBincodeReader::new(bytes.borrow()),
-                turbo_bincode::TURBO_BINCODE_CONFIG,
-                (),
-            );
+            let mut decoder = turbo_bincode::new_turbo_bincode_decoder(bytes.borrow());
             storage
                 .decode_meta(&mut decoder)
                 .map_err(|e| anyhow::anyhow!("Failed to decode meta: {e:?}"))?;
@@ -551,12 +529,10 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
         }
         inner
             .with_tx(tx, |tx| lookup(&inner.database, tx, task_id, storage))
-            .with_context(|| {
-                format!("Looking up task storage meta for {task_id} from database failed")
-            })
+            .with_context(|| format!("Looking up typed meta for {task_id} from database failed"))
     }
 
-    unsafe fn lookup_task_storage_data(
+    unsafe fn lookup_typed_data(
         &self,
         tx: Option<&T::ReadTransaction<'_>>,
         task_id: TaskId,
@@ -574,11 +550,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
             else {
                 return Ok(());
             };
-            let mut decoder = bincode::de::DecoderImpl::new(
-                turbo_bincode::TurboBincodeReader::new(bytes.borrow()),
-                turbo_bincode::TURBO_BINCODE_CONFIG,
-                (),
-            );
+            let mut decoder = turbo_bincode::new_turbo_bincode_decoder(bytes.borrow());
             storage
                 .decode_data(&mut decoder)
                 .map_err(|e| anyhow::anyhow!("Failed to decode data: {e:?}"))?;
@@ -586,12 +558,10 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
         }
         inner
             .with_tx(tx, |tx| lookup(&inner.database, tx, task_id, storage))
-            .with_context(|| {
-                format!("Looking up task storage data for {task_id} from database failed")
-            })
+            .with_context(|| format!("Looking up typed data for {task_id} from database failed"))
     }
 
-    unsafe fn batch_lookup_task_storage(
+    unsafe fn batch_lookup_typed(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_ids: &[TaskId],
@@ -617,11 +587,7 @@ impl<T: KeyValueDatabase + Send + Sync + 'static> BackingStorageSealed
                 .map(|opt_bytes| {
                     let mut storage = TaskStorage::new();
                     if let Some(bytes) = opt_bytes {
-                        let mut decoder = bincode::de::DecoderImpl::new(
-                            turbo_bincode::TurboBincodeReader::new(bytes.borrow()),
-                            turbo_bincode::TURBO_BINCODE_CONFIG,
-                            (),
-                        );
+                        let mut decoder = turbo_bincode::new_turbo_bincode_decoder(bytes.borrow());
                         match category {
                             TaskDataCategory::Meta => {
                                 storage

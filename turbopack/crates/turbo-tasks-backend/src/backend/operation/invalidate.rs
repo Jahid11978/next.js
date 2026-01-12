@@ -11,12 +11,8 @@ use crate::{
                 AggregationUpdateJob, AggregationUpdateQueue, ComputeDirtyAndCleanUpdate,
             },
         },
-        storage::{get, get_mut, remove},
     },
-    data::{
-        CachedDataItem, CachedDataItemKey, CachedDataItemValue, Dirtyness, InProgressState,
-        InProgressStateInner,
-    },
+    data::{Dirtyness, InProgressState, InProgressStateInner},
 };
 
 #[derive(Encode, Decode, Clone, Default)]
@@ -200,7 +196,7 @@ pub fn make_task_dirty_internal(
     // There must be no way to invalidate immutable tasks. If there would be a way the task is not
     // immutable.
     #[cfg(any(debug_assertions, feature = "verify_immutable"))]
-    if task.is_immutable() {
+    if task.immutable() {
         #[cfg(feature = "trace_task_dirty")]
         let extra_info = format!(
             " Invalidation cause: {}",
@@ -218,7 +214,7 @@ pub fn make_task_dirty_internal(
 
     if make_stale
         && let Some(InProgressState::InProgress(box InProgressStateInner { stale, .. })) =
-            get_mut!(task, InProgress)
+            task.get_in_progress_mut()
         && !*stale
     {
         #[cfg(feature = "trace_task_dirty")]
@@ -231,13 +227,9 @@ pub fn make_task_dirty_internal(
         .entered();
         *stale = true;
     }
-    let old = task.insert(CachedDataItem::Dirty {
-        value: Dirtyness::Dirty,
-    });
+    let old = task.set_dirty(Dirtyness::Dirty);
     let (old_self_dirty, old_current_session_self_clean) = match old {
-        Some(CachedDataItemValue::Dirty {
-            value: Dirtyness::Dirty,
-        }) => {
+        Some(Dirtyness::Dirty) => {
             #[cfg(feature = "trace_task_dirty")]
             let _span = tracing::trace_span!(
                 "task already dirty",
@@ -249,12 +241,11 @@ pub fn make_task_dirty_internal(
             // already dirty
             return;
         }
-        Some(CachedDataItemValue::Dirty {
-            value: Dirtyness::SessionDependent,
-        }) => {
+        Some(Dirtyness::SessionDependent) => {
             // It was a session-dependent dirty before, so we need to remove that clean count
-            let was_current_session_clean = remove!(task, CurrentSessionClean).is_some();
+            let was_current_session_clean = task.current_session_clean();
             if was_current_session_clean {
+                task.set_current_session_clean(false);
                 // There was a clean count for a session. If it was the current session, we need to
                 // propagate that change.
                 (true, true)
@@ -274,19 +265,19 @@ pub fn make_task_dirty_internal(
             // It was clean before, so we need to increase the dirty count
             (false, false)
         }
-        _ => unreachable!(),
     };
 
     let new_self_dirty = true;
     let new_current_session_self_clean = false;
 
-    let dirty_container_count = get!(task, AggregatedDirtyContainerCount)
+    let dirty_container_count = task
+        .get_aggregated_dirty_container_count()
         .copied()
         .unwrap_or_default();
-    let current_session_clean_container_count =
-        get!(task, AggregatedCurrentSessionCleanContainerCount)
-            .copied()
-            .unwrap_or_default();
+    let current_session_clean_container_count = task
+        .get_aggregated_current_session_clean_container_count()
+        .copied()
+        .unwrap_or_default();
 
     #[cfg(feature = "trace_task_dirty")]
     let _span = tracing::trace_span!(
@@ -316,18 +307,15 @@ pub fn make_task_dirty_internal(
         ));
     }
 
-    let should_schedule =
-        !ctx.should_track_activeness() || task.has_key(&CachedDataItemKey::Activeness {});
+    let should_schedule = !ctx.should_track_activeness() || task.has_activeness();
 
-    if should_schedule {
-        let description = || ctx.get_task_desc_fn(task_id);
-        if task.add(CachedDataItem::new_scheduled(
-            TaskExecutionReason::Invalidated,
-            description,
-        )) {
-            drop(task);
-            let task = ctx.task(task_id, TaskDataCategory::All);
-            ctx.schedule_task(task);
-        }
+    if should_schedule
+        && task.add_scheduled(TaskExecutionReason::Invalidated, || {
+            ctx.get_task_desc_fn(task_id)
+        })
+    {
+        drop(task);
+        let task = ctx.task(task_id, TaskDataCategory::All);
+        ctx.schedule_task(task);
     }
 }

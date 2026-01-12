@@ -76,23 +76,41 @@ pub trait BackingStorageSealed: 'static + Send + Sync {
         task_id: TaskId,
     ) -> Result<Option<Arc<CachedTaskType>>>;
 
-    // =========================================================================
-    // TaskStorage serialization methods
-    // These methods provide direct serialization to/from TaskStorage without
-    // the intermediate CachedDataItem representation.
-    // =========================================================================
+    /// Serialize TaskStorage meta fields directly to bytes.
+    /// This uses the generated encode_meta method for efficient serialization.
+    fn serialize_typed_meta(&self, storage: &TaskStorage) -> Result<TurboBincodeBuffer> {
+        let mut buffer = TurboBincodeBuffer::new();
+        let mut encoder = turbo_bincode::new_turbo_bincode_encoder(&mut buffer);
+        storage
+            .encode_meta(&mut encoder)
+            .map_err(|e| anyhow::anyhow!("Failed to encode meta: {e:?}"))?;
 
-    /// Serialize meta fields from TaskStorage to bytes.
-    fn serialize_task_storage_meta(&self, storage: &TaskStorage) -> TurboBincodeBuffer;
+        #[cfg(feature = "verify_serialization")]
+        verify_typed_meta_roundtrip(storage, &buffer);
 
-    /// Serialize data fields from TaskStorage to bytes.
-    fn serialize_task_storage_data(&self, storage: &TaskStorage) -> TurboBincodeBuffer;
+        Ok(buffer)
+    }
+
+    /// Serialize TaskStorage data fields directly to bytes.
+    /// This uses the generated encode_data method for efficient serialization.
+    fn serialize_typed_data(&self, storage: &TaskStorage) -> Result<TurboBincodeBuffer> {
+        let mut buffer = TurboBincodeBuffer::new();
+        let mut encoder = turbo_bincode::new_turbo_bincode_encoder(&mut buffer);
+        storage
+            .encode_data(&mut encoder)
+            .map_err(|e| anyhow::anyhow!("Failed to encode data: {e:?}"))?;
+
+        #[cfg(feature = "verify_serialization")]
+        verify_typed_data_roundtrip(storage, &buffer);
+
+        Ok(buffer)
+    }
 
     /// Lookup and decode meta fields directly into TaskStorage.
     /// # Safety
     ///
     /// `tx` must be a transaction from this BackingStorage instance.
-    unsafe fn lookup_task_storage_meta(
+    unsafe fn lookup_typed_meta(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_id: TaskId,
@@ -103,19 +121,19 @@ pub trait BackingStorageSealed: 'static + Send + Sync {
     /// # Safety
     ///
     /// `tx` must be a transaction from this BackingStorage instance.
-    unsafe fn lookup_task_storage_data(
+    unsafe fn lookup_typed_data(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_id: TaskId,
         storage: &mut TaskStorage,
     ) -> Result<()>;
 
-    /// Batch lookup and decode data for multiple tasks directly into TaskStorage instances.
-    /// Returns a vector of TaskStorage, one for each task_id in the input slice.
+    /// Batch lookup and decode data for multiple tasks directly into TypedStorage instances.
+    /// Returns a vector of TypedStorage, one for each task_id in the input slice.
     /// # Safety
     ///
     /// `tx` must be a transaction from this BackingStorage instance.
-    unsafe fn batch_lookup_task_storage(
+    unsafe fn batch_lookup_typed(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_ids: &[TaskId],
@@ -216,15 +234,7 @@ where
         }
     }
 
-    fn serialize_task_storage_meta(&self, storage: &TaskStorage) -> TurboBincodeBuffer {
-        either::for_both!(self, this => this.serialize_task_storage_meta(storage))
-    }
-
-    fn serialize_task_storage_data(&self, storage: &TaskStorage) -> TurboBincodeBuffer {
-        either::for_both!(self, this => this.serialize_task_storage_data(storage))
-    }
-
-    unsafe fn lookup_task_storage_meta(
+    unsafe fn lookup_typed_meta(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_id: TaskId,
@@ -233,16 +243,16 @@ where
         match self {
             Either::Left(this) => {
                 let tx = tx.map(|tx| read_transaction_left_or_panic(tx.as_ref()));
-                unsafe { this.lookup_task_storage_meta(tx, task_id, storage) }
+                unsafe { this.lookup_typed_meta(tx, task_id, storage) }
             }
             Either::Right(this) => {
                 let tx = tx.map(|tx| read_transaction_right_or_panic(tx.as_ref()));
-                unsafe { this.lookup_task_storage_meta(tx, task_id, storage) }
+                unsafe { this.lookup_typed_meta(tx, task_id, storage) }
             }
         }
     }
 
-    unsafe fn lookup_task_storage_data(
+    unsafe fn lookup_typed_data(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_id: TaskId,
@@ -251,16 +261,16 @@ where
         match self {
             Either::Left(this) => {
                 let tx = tx.map(|tx| read_transaction_left_or_panic(tx.as_ref()));
-                unsafe { this.lookup_task_storage_data(tx, task_id, storage) }
+                unsafe { this.lookup_typed_data(tx, task_id, storage) }
             }
             Either::Right(this) => {
                 let tx = tx.map(|tx| read_transaction_right_or_panic(tx.as_ref()));
-                unsafe { this.lookup_task_storage_data(tx, task_id, storage) }
+                unsafe { this.lookup_typed_data(tx, task_id, storage) }
             }
         }
     }
 
-    unsafe fn batch_lookup_task_storage(
+    unsafe fn batch_lookup_typed(
         &self,
         tx: Option<&Self::ReadTransaction<'_>>,
         task_ids: &[TaskId],
@@ -269,11 +279,11 @@ where
         match self {
             Either::Left(this) => {
                 let tx = tx.map(|tx| read_transaction_left_or_panic(tx.as_ref()));
-                unsafe { this.batch_lookup_task_storage(tx, task_ids, category) }
+                unsafe { this.batch_lookup_typed(tx, task_ids, category) }
             }
             Either::Right(this) => {
                 let tx = tx.map(|tx| read_transaction_right_or_panic(tx.as_ref()));
-                unsafe { this.batch_lookup_task_storage(tx, task_ids, category) }
+                unsafe { this.batch_lookup_typed(tx, task_ids, category) }
             }
         }
     }
@@ -306,5 +316,61 @@ fn read_transaction_right_or_panic<L, R>(either: Either<L, R>) -> R {
             type_name::<L>(),
         ),
         Either::Right(r) => r,
+    }
+}
+
+/// Verify that TypedStorage meta fields can be round-tripped through serialization.
+/// This clones a snapshot (which only includes persistent fields), decodes from the
+/// encoded buffer, and verifies the decoded storage equals the original snapshot.
+#[cfg(feature = "verify_serialization")]
+fn verify_typed_meta_roundtrip(original: &TypedStorage, encoded: &TurboBincodeBuffer) {
+    use std::borrow::Borrow;
+
+    // Clone only the persistent meta fields
+    let original_snapshot = original.clone_meta_snapshot();
+
+    // Decode the encoded bytes into a new TypedStorage
+    let mut decoded = TypedStorage::new();
+    let mut decoder = turbo_bincode::new_turbo_bincode_decoder(encoded.borrow());
+    if let Err(e) = decoded.decode_meta(&mut decoder) {
+        println!("TypedStorage meta would not be deserializable:\n{e:?}");
+        panic!("TypedStorage meta would not be deserializable:\n{e:?}");
+    }
+
+    // Verify the decoded storage equals the original snapshot
+    if decoded != original_snapshot {
+        println!(
+            "TypedStorage meta would not round-trip correctly:\noriginal_snapshot: \
+             {original_snapshot:#?}\ndecoded: {decoded:#?}"
+        );
+        panic!("TypedStorage meta would not round-trip correctly");
+    }
+}
+
+/// Verify that TypedStorage data fields can be round-tripped through serialization.
+/// This clones a snapshot (which only includes persistent fields), decodes from the
+/// encoded buffer, and verifies the decoded storage equals the original snapshot.
+#[cfg(feature = "verify_serialization")]
+fn verify_typed_data_roundtrip(original: &TypedStorage, encoded: &TurboBincodeBuffer) {
+    use std::borrow::Borrow;
+
+    // Clone only the persistent data fields
+    let original_snapshot = original.clone_data_snapshot();
+
+    // Decode the encoded bytes into a new TypedStorage
+    let mut decoded = TypedStorage::new();
+    let mut decoder = turbo_bincode::new_turbo_bincode_decoder(encoded.borrow());
+    if let Err(e) = decoded.decode_data(&mut decoder) {
+        println!("TypedStorage data would not be deserializable:\n{e:?}");
+        panic!("TypedStorage data would not be deserializable:\n{e:?}");
+    }
+
+    // Verify the decoded storage equals the original snapshot
+    if decoded != original_snapshot {
+        println!(
+            "TypedStorage data would not round-trip correctly:\noriginal_snapshot: \
+             {original_snapshot:#?}\ndecoded: {decoded:#?}"
+        );
+        panic!("TypedStorage data would not round-trip correctly");
     }
 }

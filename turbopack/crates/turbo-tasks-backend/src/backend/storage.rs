@@ -15,16 +15,6 @@ use crate::{
     },
 };
 
-/// A snapshot of TaskStorage, used during persistence.
-/// This is just a clone of TaskStorage with modified flags preserved.
-pub struct TaskStorageSnapshot {
-    pub storage: TaskStorage,
-    /// Whether meta was modified (preserved from flags at snapshot time)
-    pub meta_modified: bool,
-    /// Whether data was modified (preserved from flags at snapshot time)
-    pub data_modified: bool,
-}
-
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash)]
 pub enum TaskDataCategory {
     Meta,
@@ -91,16 +81,6 @@ impl Iterator for TaskDataCategoryIterator {
     }
 }
 
-impl From<&TaskStorage> for TaskStorageSnapshot {
-    fn from(storage: &TaskStorage) -> Self {
-        Self {
-            storage: storage.clone(),
-            meta_modified: storage.flags.meta_modified(),
-            data_modified: storage.flags.data_modified(),
-        }
-    }
-}
-
 enum ModifiedState {
     /// It was modified before snapshot mode was entered, but it was not accessed during snapshot
     /// mode.
@@ -108,10 +88,12 @@ enum ModifiedState {
     /// Snapshot(Some):
     /// It was modified before snapshot mode was entered and it was accessed again during snapshot
     /// mode. A copy of the version of the item when snapshot mode was entered is stored here.
+    /// The `TaskStorage` contains only persistent fields (via `clone_snapshot()`), and has
+    /// `meta_modified`/`data_modified` flags set to indicate which categories need serializing.
     /// Snapshot(None):
     /// It was not modified before snapshot mode was entered, but it was accessed during snapshot
     /// mode. Or the snapshot was already taken out by the snapshot operation.
-    Snapshot(Option<Box<TaskStorageSnapshot>>),
+    Snapshot(Option<Box<TaskStorage>>),
 }
 
 pub struct Storage {
@@ -154,7 +136,7 @@ impl Storage {
         R,
         PP: for<'a> Fn(TaskId, &'a TaskStorage) -> T + Sync,
         P: Fn(TaskId, T) -> R + Sync,
-        PS: Fn(TaskId, Box<TaskStorageSnapshot>) -> R + Sync,
+        PS: Fn(TaskId, Box<TaskStorage>) -> R + Sync,
     >(
         &'l self,
         preprocess: &'l PP,
@@ -170,7 +152,7 @@ impl Storage {
         // The number of shards is much larger than the number of threads, so the effect of the
         // locks held is negligible.
         parallel::map_collect::<_, _, Vec<_>>(self.modified.shards(), |shard| {
-            let mut direct_snapshots: Vec<(TaskId, Box<TaskStorageSnapshot>)> = Vec::new();
+            let mut direct_snapshots: Vec<(TaskId, Box<TaskStorage>)> = Vec::new();
             let mut modified: SmallVec<[TaskId; 4]> = SmallVec::new();
             {
                 // Take the snapshots from the modified map
@@ -368,9 +350,13 @@ impl StorageWriteGuard<'_> {
                     // In snapshot mode and item is modified (so it's part of the snapshot)
                     // We need to store the original version that is part of the snapshot
                     if !flags.any_snapshot() {
+                        // Clone persistent fields and preserve the modified flags
+                        let mut snapshot = self.inner.clone_snapshot();
+                        snapshot.flags.set_meta_modified(flags.meta_modified());
+                        snapshot.flags.set_data_modified(flags.data_modified());
                         self.storage.modified.insert(
                             *self.inner.key(),
-                            ModifiedState::Snapshot(Some(Box::new((&**self.inner).into()))),
+                            ModifiedState::Snapshot(Some(Box::new(snapshot))),
                         );
                     }
                     match category {
@@ -397,257 +383,6 @@ impl DerefMut for StorageWriteGuard<'_> {
     }
 }
 
-impl super::storage_schema::TaskStorageAccessors for StorageWriteGuard<'_> {
-    fn typed(&self) -> &super::storage_schema::TaskStorage {
-        &self.inner
-    }
-
-    fn typed_mut(&mut self) -> &mut super::storage_schema::TaskStorage {
-        &mut self.inner
-    }
-
-    fn track_modification(&mut self, category: SpecificTaskDataCategory) {
-        // Delegate to the existing track_modification method
-        StorageWriteGuard::track_modification(self, category)
-    }
-
-    fn check_access(&self, _category: super::TaskDataCategory) {
-        // StorageWriteGuard doesn't have category tracking - that's handled by TaskGuardImpl.
-        // This is a no-op for StorageWriteGuard.
-    }
-}
-
-macro_rules! count {
-    ($task:ident, $key:ident) => {{ $task.count($crate::data::CachedDataItemType::$key) }};
-}
-
-macro_rules! get {
-    ($task:ident, $key:ident $input:tt) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        if let Some($crate::data::CachedDataItemValueRef::$key {
-            value,
-        }) = $task.get(&$crate::data::CachedDataItemKey::$key $input) {
-            Some(value)
-        } else {
-            None
-        }
-    }};
-    ($task:ident, $key:ident) => {
-        $crate::backend::storage::get!($task, $key {})
-    };
-}
-
-macro_rules! get_mut {
-    ($task:ident, $key:ident $input:tt) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        if let Some($crate::data::CachedDataItemValueRefMut::$key {
-            value,
-        }) = $task.get_mut(&$crate::data::CachedDataItemKey::$key $input) {
-            let () = $crate::data::allow_mut_access::$key;
-            Some(value)
-        } else {
-            None
-        }
-    }};
-    ($task:ident, $key:ident) => {
-        $crate::backend::storage::get_mut!($task, $key {})
-    };
-}
-
-macro_rules! get_mut_or_insert_with {
-    ($task:ident, $key:ident $input:tt, $f:expr) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::operation::TaskGuard;
-        let () = $crate::data::allow_mut_access::$key;
-        let functor = $f;
-        let $crate::data::CachedDataItemValueRefMut::$key {
-            value,
-        } = $task.get_mut_or_insert_with($crate::data::CachedDataItemKey::$key $input, move || $crate::data::CachedDataItemValue::$key { value: functor() }) else {
-            unreachable!()
-        };
-        value
-    }};
-    ($task:ident, $key:ident, $f:expr) => {
-        $crate::backend::storage::get_mut_or_insert_with!($task, $key {}, $f)
-    };
-}
-
-/// Creates an iterator over all [`CachedDataItemKey::$key`][crate::data::CachedDataItemKey]s in
-/// `$task` matching the given `$key_pattern`, optional `$value_pattern`, and optional `if $cond`.
-///
-/// Each element in the iterator is determined by `$iter_item`, which may use fields extracted by
-/// `$key_pattern` or `$value_pattern`.
-macro_rules! iter_many {
-    ($task:ident, $key:ident $key_pattern:tt $(if $cond:expr)? => $iter_item:expr) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        $task
-            .iter($crate::data::CachedDataItemType::$key)
-            .filter_map(|(key, _)| match key {
-                $crate::data::CachedDataItemKey::$key $key_pattern $(if $cond)? => Some(
-                    $iter_item
-                ),
-                _ => None,
-            })
-    }};
-    ($task:ident, $key:ident $input:tt $value_pattern:tt $(if $cond:expr)? => $iter_item:expr) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        $task
-            .iter($crate::data::CachedDataItemType::$key)
-            .filter_map(|(key, value)| match (key, value) {
-                (
-                    $crate::data::CachedDataItemKey::$key $input,
-                    $crate::data::CachedDataItemValueRef::$key { value: $value_pattern }
-                ) $(if $cond)? => Some($iter_item),
-                _ => None,
-            })
-    }};
-}
-
-/// A thin wrapper around [`iter_many`] that calls [`Iterator::collect`].
-///
-/// Note that the return type of [`Iterator::collect`] may be ambiguous in certain contexts, so
-/// using this macro may require explicit type annotations on variables.
-macro_rules! get_many {
-    ($($args:tt)*) => {
-        $crate::backend::storage::iter_many!($($args)*).collect()
-    };
-}
-
-macro_rules! update {
-    ($task:ident, $key:ident $input:tt, $update:expr) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        #[allow(unused_mut)]
-        let mut update = $update;
-        $task.update($crate::data::CachedDataItemKey::$key $input, |old| {
-            update(old.and_then(|old| {
-                if let $crate::data::CachedDataItemValue::$key { value } = old {
-                    Some(value)
-                } else {
-                    None
-                }
-            }))
-            .map(|new| $crate::data::CachedDataItemValue::$key { value: new })
-        })
-    }};
-    ($task:ident, $key:ident, $update:expr) => {
-        $crate::backend::storage::update!($task, $key {}, $update)
-    };
-}
-
-macro_rules! update_count {
-    ($task:ident, $key:ident $input:tt, -$update:expr) => {
-        match $update {
-            update => {
-                let mut state_change = false;
-                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
-                    #[allow(unused_comparisons, reason = "type of update might be unsigned, where update < 0 is always false")]
-                    if let Some(old) = old {
-                        let new = old - update;
-                        state_change = old <= 0 && new > 0 || old > 0 && new <= 0;
-                        (new != 0).then_some(new)
-                    } else {
-                        state_change = update < 0;
-                        (update != 0).then_some(-update)
-                    }
-                });
-                state_change
-            }
-        }
-    };
-    ($task:ident, $key:ident $input:tt, $update:expr) => {
-        match $update {
-            update => {
-                let mut state_change = false;
-                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
-                    if let Some(old) = old {
-                        let new = old + update;
-                        state_change = old <= 0 && new > 0 || old > 0 && new <= 0;
-                        (new != 0).then_some(new)
-                    } else {
-                        state_change = update > 0;
-                        (update != 0).then_some(update)
-                    }
-                });
-                state_change
-            }
-        }
-    };
-    ($task:ident, $key:ident, -$update:expr) => {
-        $crate::backend::storage::update_count!($task, $key {}, -$update)
-    };
-    ($task:ident, $key:ident, $update:expr) => {
-        $crate::backend::storage::update_count!($task, $key {}, $update)
-    };
-}
-
-macro_rules! update_count_and_get {
-    ($task:ident, $key:ident $input:tt, -$update:expr) => {
-        match $update {
-            update => {
-                let mut new = 0;
-                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
-                    let old = old.unwrap_or(0);
-                    new = old - update;
-                    (new != 0).then_some(new)
-                });
-                new
-            }
-        }
-    };
-    ($task:ident, $key:ident $input:tt, $update:expr) => {
-        match $update {
-            update => {
-                let mut new = 0;
-                $crate::backend::storage::update!($task, $key $input, |old: Option<_>| {
-                    let old = old.unwrap_or(0);
-                    new = old + update;
-                    (new != 0).then_some(new)
-                });
-                new
-            }
-        }
-    };
-    ($task:ident, $key:ident, -$update:expr) => {
-        $crate::backend::storage::update_count_and_get!($task, $key {}, -$update)
-    };
-    ($task:ident, $key:ident, $update:expr) => {
-        $crate::backend::storage::update_count_and_get!($task, $key {}, $update)
-    };
-}
-
-macro_rules! remove {
-    ($task:ident, $key:ident $input:tt) => {{
-        #[allow(unused_imports)]
-        use $crate::backend::storage_schema::TaskStorageAccessors;
-        if let Some($crate::data::CachedDataItemValue::$key { value }) = $task.remove(
-            &$crate::data::CachedDataItemKey::$key $input
-        ) {
-            Some(value)
-        } else {
-            None
-        }
-    }};
-    ($task:ident, $key:ident) => {
-        $crate::backend::storage::remove!($task, $key {})
-    };
-}
-
-pub(crate) use count;
-pub(crate) use get;
-pub(crate) use get_many;
-pub(crate) use get_mut;
-pub(crate) use get_mut_or_insert_with;
-pub(crate) use iter_many;
-pub(crate) use remove;
-pub(crate) use update;
-pub(crate) use update_count;
-pub(crate) use update_count_and_get;
-
 pub struct SnapshotGuard<'l> {
     storage: &'l Storage,
 }
@@ -659,7 +394,7 @@ impl Drop for SnapshotGuard<'_> {
 }
 
 pub struct SnapshotShard<'l, PP, P, PS> {
-    direct_snapshots: Vec<(TaskId, Box<TaskStorageSnapshot>)>,
+    direct_snapshots: Vec<(TaskId, Box<TaskStorage>)>,
     modified: SmallVec<[TaskId; 4]>,
     storage: &'l Storage,
     guard: Option<Arc<SnapshotGuard<'l>>>,
@@ -672,7 +407,7 @@ impl<'l, T, R, PP, P, PS> Iterator for SnapshotShard<'l, PP, P, PS>
 where
     PP: for<'a> Fn(TaskId, &'a TaskStorage) -> T + Sync,
     P: Fn(TaskId, T) -> R + Sync,
-    PS: Fn(TaskId, Box<TaskStorageSnapshot>) -> R + Sync,
+    PS: Fn(TaskId, Box<TaskStorage>) -> R + Sync,
 {
     type Item = R;
 
@@ -702,35 +437,5 @@ where
         }
         self.guard = None;
         None
-    }
-}
-
-#[cfg(test)]
-mod tests {
-    use super::*;
-
-    #[test]
-    fn test_task_storage_size() {
-        // TaskStorage size affects memory usage per task.
-        // We track this to catch unexpected bloat from type changes.
-        // Note: The size of TaskStorage depends on the number of inline fields
-        // and the size of the flags bitfield. This is a sanity check.
-        let storage_size = std::mem::size_of::<TaskStorage>();
-        let snapshot_size = std::mem::size_of::<TaskStorageSnapshot>();
-
-        // Just verify the sizes are reasonable (not zero, not huge)
-        assert!(storage_size > 0, "TaskStorage should have non-zero size");
-        assert!(
-            storage_size < 1024,
-            "TaskStorage should be reasonably sized"
-        );
-        assert!(
-            snapshot_size > 0,
-            "TaskStorageSnapshot should have non-zero size"
-        );
-        assert!(
-            snapshot_size < 1024,
-            "TaskStorageSnapshot should be reasonably sized"
-        );
     }
 }
