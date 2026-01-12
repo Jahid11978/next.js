@@ -1713,6 +1713,9 @@ async fn directory_tree_to_entrypoints_internal_untraced(
         // expose the app global error so runtime errors render, but we shouldn't emit it otherwise.
         if matches!(*next_mode.await?, NextMode::Build) {
             // Use built-in global-error.js to create a `_global-error/page` route.
+            let next_package = get_next_package(app_dir.clone()).await?;
+            let global_error_path =
+                Some(next_package.join("dist/client/components/builtin/global-error.js")?);
             let global_error_tree = AppPageLoaderTree {
                 page: app_page.clone(),
                 segment: directory_name.clone(),
@@ -1722,15 +1725,17 @@ async fn directory_tree_to_entrypoints_internal_untraced(
                         segment: rcstr!("__PAGE__"),
                         parallel_routes: FxIndexMap::default(),
                         modules: AppDirModules {
-                            page: Some(get_next_package(app_dir.clone())
-                                .await?
+                            page: Some(next_package
                                 .join("dist/client/components/builtin/app-error.js")?),
                             ..Default::default()
                         },
                         global_metadata,
                     }
                 },
-                modules: AppDirModules::default(),
+                modules: AppDirModules {
+                    global_error: global_error_path,
+                    ..Default::default()
+                },
                 global_metadata,
             }
             .resolved_cell();
