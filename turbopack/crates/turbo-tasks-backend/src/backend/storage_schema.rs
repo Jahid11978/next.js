@@ -230,9 +230,11 @@ pub struct TaskStorageSchema {
 
     // =========================================================================
     // CELL DATA (data)
+    // These fields use custom optimized serialization via encode_custom_fields.
     // =========================================================================
     /// Persistent cell data (serializable).
-    #[task_storage(storage = "auto_map", category = "data")]
+    /// Uses custom serialization: grouped by ValueTypeId, indices implicit in order.
+    #[task_storage(storage = "auto_map", category = "data", custom_serialization)]
     pub cell_data: AutoMap<CellId, TypedSharedReference>,
 
     /// Transient cell data (not serializable).
@@ -240,7 +242,9 @@ pub struct TaskStorageSchema {
     pub transient_cell_data: AutoMap<CellId, SharedReference>,
 
     /// Maximum cell index per cell type.
-    #[task_storage(storage = "auto_map", category = "data")]
+    /// Uses custom serialization: derived from cell_data for serializable types,
+    /// only stored explicitly for transient types.
+    #[task_storage(storage = "auto_map", category = "data", custom_serialization)]
     pub cell_type_max_index: AutoMap<ValueTypeId, u32>,
 
     // =========================================================================
@@ -417,6 +421,164 @@ impl TaskStorage {
             let activeness = ActivenessState::new_root(root_type, task_id);
             self.lazy.push(LazyField::Activeness(activeness));
         }
+    }
+}
+
+// =============================================================================
+// Optimized Cell Data Serialization
+// =============================================================================
+//
+// Cell data serialization is optimized to reduce redundancy:
+// 1. Cell indices are implicit (always sequential 0, 1, 2... per type)
+// 2. ValueTypeId is not repeated in each cell's value (grouped by type)
+// 3. cell_type_max_index is derived from cell_data for serializable types
+// 4. Only transient types need explicit cell_type_max_index entries
+//
+// Format:
+// - num_types: usize (number of distinct ValueTypeIds in cell_data)
+// - For each type:
+//   - type_id: ValueTypeId
+//   - num_cells: usize (number of cells of this type)
+//   - For each cell (in index order 0..num_cells):
+//     - cell_value: SharedReference (just the data, no type_id wrapper)
+// - num_transient_max_index: usize (number of transient type max_index entries)
+// - For each transient type:
+//   - type_id: ValueTypeId
+//   - max_index: u32
+
+impl TaskStorage {
+    /// Encode cell_data and cell_type_max_index with optimized format.
+    ///
+    /// Groups cells by ValueTypeId, encodes indices implicitly by position,
+    /// and only encodes cell_type_max_index for transient types (serializable
+    /// types can derive max_index from cell count).
+    ///
+    /// This requires the encoder to be a TurboBincodeEncoder since SharedReference
+    /// uses custom turbo_bincode serialization.
+    pub fn encode_custom_fields(
+        &self,
+        encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
+    ) -> Result<(), bincode::error::EncodeError> {
+        // Group cell_data by ValueTypeId
+        let mut by_type: rustc_hash::FxHashMap<ValueTypeId, Vec<(u32, &SharedReference)>> =
+            rustc_hash::FxHashMap::default();
+
+        if let Some(cell_data) = self.cell_data() {
+            for (cell_id, typed_ref) in cell_data.iter() {
+                by_type
+                    .entry(cell_id.type_id)
+                    .or_default()
+                    .push((cell_id.index, &typed_ref.reference));
+            }
+        }
+
+        // Sort each group by index to ensure correct order
+        for cells in by_type.values_mut() {
+            cells.sort_by_key(|(idx, _)| *idx);
+        }
+
+        // Encode grouped cell data
+        bincode::Encode::encode(&by_type.len(), encoder)?;
+        for (type_id, cells) in &by_type {
+            bincode::Encode::encode(type_id, encoder)?;
+            bincode::Encode::encode(&cells.len(), encoder)?;
+
+            // Get the type's encode function
+            let value_type = turbo_tasks::registry::get_value_type(*type_id);
+            let (encode_fn, _) = value_type.bincode.ok_or_else(|| {
+                bincode::error::EncodeError::OtherString(format!(
+                    "{} is not encodable",
+                    value_type.global_name
+                ))
+            })?;
+
+            for (_, shared_ref) in cells {
+                // Encode just the data, not the type_id (we already encoded it once for the group)
+                encode_fn(&*shared_ref.0, encoder)?;
+            }
+        }
+
+        // Encode cell_type_max_index ONLY for transient types
+        // (serializable types can derive max_index from cell_data count)
+        let transient_entries: Vec<_> = self
+            .cell_type_max_index()
+            .map(|map| {
+                map.iter()
+                    .filter(|(type_id, _)| {
+                        // Type is transient if it doesn't have bincode serialization
+                        turbo_tasks::registry::get_value_type(**type_id)
+                            .bincode
+                            .is_none()
+                    })
+                    .collect()
+            })
+            .unwrap_or_default();
+
+        bincode::Encode::encode(&transient_entries.len(), encoder)?;
+        for (type_id, max_idx) in transient_entries {
+            bincode::Encode::encode(type_id, encoder)?;
+            bincode::Encode::encode(max_idx, encoder)?;
+        }
+
+        Ok(())
+    }
+
+    /// Decode cell_data and cell_type_max_index from optimized format.
+    ///
+    /// Reconstructs cell_data from grouped format, derives cell_type_max_index
+    /// for serializable types, and reads explicit entries for transient types.
+    ///
+    /// This requires the decoder to be a TurboBincodeDecoder since SharedReference
+    /// uses custom turbo_bincode deserialization.
+    pub fn decode_custom_fields(
+        &mut self,
+        decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
+    ) -> Result<(), bincode::error::DecodeError> {
+        // Decode grouped cell data
+        let num_types: usize = bincode::Decode::decode(decoder)?;
+
+        for _ in 0..num_types {
+            let type_id: ValueTypeId = bincode::Decode::decode(decoder)?;
+            let num_cells: usize = bincode::Decode::decode(decoder)?;
+
+            // Get the type's decode function
+            let value_type = turbo_tasks::registry::get_value_type(type_id);
+            let (_, decode_fn) = value_type.bincode.ok_or_else(|| {
+                bincode::error::DecodeError::OtherString(format!(
+                    "{} is not decodable",
+                    value_type.global_name
+                ))
+            })?;
+
+            let cell_data = self.cell_data_mut();
+            for index in 0..num_cells {
+                // Decode just the data, type_id is known from the group
+                let reference: SharedReference = decode_fn(decoder)?;
+                let cell_id = CellId {
+                    type_id,
+                    index: index as u32,
+                };
+                let typed_ref = TypedSharedReference { type_id, reference };
+                cell_data.insert(cell_id, typed_ref);
+            }
+
+            // Derive cell_type_max_index from decoded cell data
+            self.cell_type_max_index_mut()
+                .insert(type_id, num_cells as u32);
+        }
+
+        // Decode transient cell_type_max_index entries
+        let num_transient: usize = bincode::Decode::decode(decoder)?;
+        if num_transient > 0 {
+            let cell_type_max_index = self.cell_type_max_index_mut();
+            for _ in 0..num_transient {
+                let type_id: ValueTypeId = bincode::Decode::decode(decoder)?;
+                let max_idx: u32 = bincode::Decode::decode(decoder)?;
+                cell_type_max_index.insert(type_id, max_idx);
+            }
+        }
+
+        Ok(())
     }
 }
 
