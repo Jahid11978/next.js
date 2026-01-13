@@ -42,6 +42,10 @@ use syn::{
 /// - `default` - Use `Default::default()` semantics instead of `Option` for inline direct fields.
 /// - `filter_transient` - Filter out transient values during serialization. For AutoMultimap
 ///   fields, transient filtering is always applied to inner set values automatically.
+/// - `custom_serialization` - Field uses custom serialization via `encode_custom_fields` and
+///   `decode_custom_data_fields` methods instead of standard bincode serialization. Fields with
+///   this attribute are skipped during normal encode/decode and must be handled by user-provided
+///   methods on TaskStorage.
 /// - `variant = "..."` - Specifies the CachedDataItem variant name for adapter code generation.
 ///   Fields without this attribute won't generate CachedDataItem adapter code.
 /// - `key_field = "..."` - Specifies the key field name in CachedDataItemKey for collection types.
@@ -108,6 +112,10 @@ struct FieldInfo {
     /// If true, use Default::default() semantics instead of Option for inline direct fields.
     /// The field type should be T (not Option<T>), and empty is represented by T::default().
     use_default: bool,
+    /// If true, this field uses custom serialization via
+    /// encode_custom_fields/decode_custom_data_fields. Fields with custom_serialization are
+    /// skipped during normal encode/decode and handled separately.
+    custom_serialization: bool,
 }
 
 impl FieldInfo {
@@ -119,6 +127,11 @@ impl FieldInfo {
     /// Whether this field is transient (not serialized, in-memory only).
     fn is_transient(&self) -> bool {
         self.category == Category::Transient
+    }
+
+    /// Whether this field uses custom serialization.
+    fn has_custom_serialization(&self) -> bool {
+        self.custom_serialization
     }
 
     /// Generate the full `self.check_access(...)` call for this field.
@@ -398,6 +411,7 @@ fn parse_field_storage_attributes(field: &syn::Field) -> FieldInfo {
     let mut inline = false; // Default is lazy (not inline)
     let mut filter_transient = false;
     let mut use_default = false;
+    let mut custom_serialization = false;
 
     // Find and parse the task_storage attribute
     if let Some(attr) = field.attrs.iter().find(|attr| {
@@ -496,12 +510,13 @@ fn parse_field_storage_attributes(field: &syn::Field) -> FieldInfo {
                         "inline" => inline = true,
                         "filter_transient" => filter_transient = true,
                         "default" => use_default = true,
+                        "custom_serialization" => custom_serialization = true,
                         other => {
                             meta.span()
                                 .unwrap()
                                 .error(format!(
                                     "unknown modifier `{other}`, expected `inline`, \
-                                     `filter_transient`, or `default`"
+                                     `filter_transient`, `default`, or `custom_serialization`"
                                 ))
                                 .emit();
                         }
@@ -577,6 +592,7 @@ fn parse_field_storage_attributes(field: &syn::Field) -> FieldInfo {
         lazy: !inline, // Default is lazy; inline = true means lazy = false
         filter_transient,
         use_default,
+        custom_serialization,
     }
 }
 
@@ -703,6 +719,25 @@ impl GroupedFields {
     /// Returns an iterator over persistent (non-transient) lazy data fields.
     fn persistent_lazy_data(&self) -> impl Iterator<Item = &FieldInfo> {
         self.lazy_data().filter(|f| !f.is_transient())
+    }
+
+    /// Returns true if any data fields have custom_serialization.
+    fn has_custom_serialization_data(&self) -> bool {
+        self.fields
+            .iter()
+            .any(|f| f.category == Category::Data && f.custom_serialization)
+    }
+
+    /// Returns an iterator over persistent inline data fields that don't use custom serialization.
+    fn persistent_inline_data_standard(&self) -> impl Iterator<Item = &FieldInfo> {
+        self.persistent_inline_data()
+            .filter(|f| !f.has_custom_serialization())
+    }
+
+    /// Returns an iterator over persistent lazy data fields that don't use custom serialization.
+    fn persistent_lazy_data_standard(&self) -> impl Iterator<Item = &FieldInfo> {
+        self.persistent_lazy_data()
+            .filter(|f| !f.has_custom_serialization())
     }
 }
 
@@ -2440,11 +2475,16 @@ fn generate_flag_trait_accessor_methods(field: &FieldInfo) -> proc_macro2::Token
 fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2::TokenStream {
     // Collect persistent fields by category using helpers
     let persistent_inline_meta: Vec<_> = grouped_fields.persistent_inline_meta().collect();
-    let persistent_inline_data: Vec<_> = grouped_fields.persistent_inline_data().collect();
     let persistent_lazy_meta: Vec<_> = grouped_fields.persistent_lazy_meta().collect();
-    let persistent_lazy_data: Vec<_> = grouped_fields.persistent_lazy_data().collect();
+
+    // For data fields, use standard (non-custom_serialization) fields only
+    let persistent_inline_data_standard: Vec<_> =
+        grouped_fields.persistent_inline_data_standard().collect();
+    let persistent_lazy_data_standard: Vec<_> =
+        grouped_fields.persistent_lazy_data_standard().collect();
 
     let has_flags = grouped_fields.persisted_flags().next().is_some();
+    let has_custom_serialization_data = grouped_fields.has_custom_serialization_data();
 
     // Generate encode_meta body
     let encode_meta_inline: Vec<_> = persistent_inline_meta
@@ -2464,13 +2504,24 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
     let encode_meta_lazy = generate_encode_lazy_fields(&persistent_lazy_meta);
 
-    // Generate encode_data body
-    let encode_data_inline: Vec<_> = persistent_inline_data
+    // Generate encode_data body (standard fields only, custom_serialization fields handled
+    // separately)
+    let encode_data_inline: Vec<_> = persistent_inline_data_standard
         .iter()
         .map(|field| generate_encode_inline_field(field))
         .collect();
 
-    let encode_data_lazy = generate_encode_lazy_fields(&persistent_lazy_data);
+    let encode_data_lazy = generate_encode_lazy_fields(&persistent_lazy_data_standard);
+
+    // Generate custom serialization call if needed
+    let encode_custom_data = if has_custom_serialization_data {
+        quote! {
+            // Encode fields with custom_serialization
+            self.encode_custom_fields(encoder)?;
+        }
+    } else {
+        quote! {}
+    };
 
     // Generate decode_meta body
     let decode_meta_inline: Vec<_> = persistent_inline_meta
@@ -2490,13 +2541,24 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
     let decode_meta_lazy = generate_decode_lazy_fields(&persistent_lazy_meta);
 
-    // Generate decode_data body
-    let decode_data_inline: Vec<_> = persistent_inline_data
+    // Generate decode_data body (standard fields only, custom_serialization fields handled
+    // separately)
+    let decode_data_inline: Vec<_> = persistent_inline_data_standard
         .iter()
         .map(|field| generate_decode_inline_field(field))
         .collect();
 
-    let decode_data_lazy = generate_decode_lazy_fields(&persistent_lazy_data);
+    let decode_data_lazy = generate_decode_lazy_fields(&persistent_lazy_data_standard);
+
+    // Generate custom deserialization call if needed
+    let decode_custom_data = if has_custom_serialization_data {
+        quote! {
+            // Decode fields with custom_serialization
+            self.decode_custom_data_fields(decoder)?;
+        }
+    } else {
+        quote! {}
+    };
 
     quote! {
         #[automatically_derived]
@@ -2521,15 +2583,19 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
             /// Encode data category fields directly to bincode.
             /// Only persistent (non-transient) fields are encoded.
-            pub fn encode_data<E: bincode::enc::Encoder>(
+            /// Fields with custom_serialization are handled via encode_custom_fields.
+            pub fn encode_data(
                 &self,
-                encoder: &mut E,
+                encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
             ) -> Result<(), bincode::error::EncodeError> {
-                // Encode inline data fields
+                // Encode inline data fields (standard serialization only)
                 #(#encode_data_inline)*
 
-                // Encode lazy data fields
+                // Encode lazy data fields (standard serialization only)
                 #encode_data_lazy
+
+                // Encode fields with custom_serialization
+                #encode_custom_data
 
                 Ok(())
             }
@@ -2554,15 +2620,19 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
             /// Decode data category fields from bincode.
             /// Only persistent (non-transient) fields are decoded.
-            pub fn decode_data<D: bincode::de::Decoder>(
+            /// Fields with custom_serialization are handled via decode_custom_data_fields.
+            pub fn decode_data(
                 &mut self,
-                decoder: &mut D,
+                decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
             ) -> Result<(), bincode::error::DecodeError> {
-                // Decode inline data fields
+                // Decode inline data fields (standard serialization only)
                 #(#decode_data_inline)*
 
-                // Decode lazy data fields
+                // Decode lazy data fields (standard serialization only)
                 #decode_data_lazy
+
+                // Decode fields with custom_serialization
+                #decode_custom_data
 
                 Ok(())
             }

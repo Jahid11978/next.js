@@ -455,7 +455,7 @@ impl TaskStorage {
     ///
     /// This requires the encoder to be a TurboBincodeEncoder since SharedReference
     /// uses custom turbo_bincode serialization.
-    pub fn encode_custom_fields(
+    fn encode_custom_fields(
         &self,
         encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
     ) -> Result<(), bincode::error::EncodeError> {
@@ -476,6 +476,9 @@ impl TaskStorage {
         for cells in by_type.values_mut() {
             cells.sort_by_key(|(idx, _)| *idx);
         }
+        // Sort by key for determinism
+        let mut by_type = by_type.into_iter().collect::<Vec<_>>();
+        by_type.sort_by_key(|(ty, _)| *ty);
 
         // Encode grouped cell data
         bincode::Encode::encode(&by_type.len(), encoder)?;
@@ -530,7 +533,7 @@ impl TaskStorage {
     ///
     /// This requires the decoder to be a TurboBincodeDecoder since SharedReference
     /// uses custom turbo_bincode deserialization.
-    pub fn decode_custom_fields(
+    fn decode_custom_data_fields(
         &mut self,
         decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
     ) -> Result<(), bincode::error::DecodeError> {
@@ -1151,7 +1154,20 @@ mod tests {
 
         // Verify transient fields were NOT decoded
         assert!(decoded.outdated_output_dependencies().is_none());
+
+        // Verify cell_data fields with custom_serialization are properly handled (empty case)
+        // Note: The custom serialization format encodes 0 types + 0 transient max_index entries
+        // when there's no cell data, which is what we're testing here.
+        assert!(decoded.cell_data().is_none());
+        assert!(decoded.cell_type_max_index().is_none());
+
+        // Verify transient_cell_data is NOT serialized (transient category)
+        assert!(decoded.transient_cell_data().is_none());
     }
+
+    // Note: Full coverage for cell_data serialization with actual TypedSharedReference values
+    // requires the turbo-tasks type registry to be initialized. See integration tests for
+    // comprehensive cell data serialization testing.
 
     #[test]
     fn test_encode_decode_empty_storage() {
@@ -1200,6 +1216,11 @@ mod tests {
         assert!(decoded.output_dependent().is_empty());
         assert!(decoded.children().is_none());
         assert!(decoded.output_dependencies().is_none());
+
+        // Verify custom_serialization fields are empty
+        assert!(decoded.cell_data().is_none());
+        assert!(decoded.cell_type_max_index().is_none());
+        assert!(decoded.transient_cell_data().is_none());
     }
 
     #[test]
