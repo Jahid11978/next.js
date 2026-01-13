@@ -11,7 +11,7 @@ use crate::{
     backend::{
         TaskDataCategory, get, get_many,
         operation::{
-            AggregatedDataUpdate, ExecuteContext, Operation, TaskGuard,
+            AggregatedDataUpdate, ExecuteContext, Operation,
             aggregation_update::{
                 AggregationUpdateJob, AggregationUpdateQueue, InnerOfUppersLostFollowersJob,
                 get_aggregation_number, get_uppers, is_aggregating_node,
@@ -19,6 +19,7 @@ use crate::{
             invalidate::make_task_dirty,
         },
         storage::update_count,
+        storage_schema::TaskStorageAccessors,
     },
     data::{CachedDataItemKey, CellRef, CollectibleRef, CollectiblesRef},
 };

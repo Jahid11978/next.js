@@ -69,35 +69,78 @@ pub struct TaskStorageSchema {
     // =========================================================================
     /// The task's aggregation number for the aggregation tree.
     /// Uses Default::default() semantics - a zero aggregation number means "not set".
-    #[task_storage(storage = "direct", category = "meta", inline, default)]
+    #[task_storage(
+        storage = "direct",
+        category = "meta",
+        inline,
+        default,
+        variant = "AggregationNumber"
+    )]
     pub aggregation_number: AggregationNumber,
 
     /// Tasks that depend on this task's output.
-    #[task_storage(storage = "auto_set", category = "data", inline, filter_transient)]
+    #[task_storage(
+        storage = "auto_set",
+        category = "data",
+        inline,
+        filter_transient,
+        variant = "OutputDependent",
+        key_field = "task"
+    )]
     pub output_dependent: AutoSet<TaskId>,
 
     /// The task's output value.
     /// Filtered during serialization to skip transient outputs (referencing transient tasks).
-    #[task_storage(storage = "direct", category = "meta", inline, filter_transient)]
+    #[task_storage(
+        storage = "direct",
+        category = "meta",
+        inline,
+        filter_transient,
+        variant = "Output"
+    )]
     pub output: Option<OutputValue>,
 
     /// Upper nodes in the aggregation tree (reference counted).
-    #[task_storage(storage = "counter_map", category = "meta", inline, filter_transient)]
+    #[task_storage(
+        storage = "counter_map",
+        category = "meta",
+        inline,
+        filter_transient,
+        variant = "Upper",
+        key_field = "task"
+    )]
     pub upper: CounterMap<TaskId, u32>,
 
     // =========================================================================
     // COLLECTIBLES (meta)
     // =========================================================================
     /// Collectibles emitted by this task (reference counted).
-    #[task_storage(storage = "counter_map", category = "meta", filter_transient)]
+    #[task_storage(
+        storage = "counter_map",
+        category = "meta",
+        filter_transient,
+        variant = "Collectible",
+        key_field = "collectible"
+    )]
     pub collectibles: CounterMap<CollectibleRef, i32>,
 
     /// Aggregated collectibles from the subgraph.
-    #[task_storage(storage = "counter_map", category = "meta", filter_transient)]
+    #[task_storage(
+        storage = "counter_map",
+        category = "meta",
+        filter_transient,
+        variant = "AggregatedCollectible",
+        key_field = "collectible"
+    )]
     pub aggregated_collectibles: CounterMap<CollectibleRef, i32>,
 
     /// Outdated collectibles to be cleaned up (transient).
-    #[task_storage(storage = "counter_map", category = "transient")]
+    #[task_storage(
+        storage = "counter_map",
+        category = "transient",
+        variant = "OutdatedCollectible",
+        key_field = "collectible"
+    )]
     pub outdated_collectibles: CounterMap<CollectibleRef, i32>,
 
     // =========================================================================
@@ -106,29 +149,52 @@ pub struct TaskStorageSchema {
     // =========================================================================
     /// Whether the task is dirty (needs re-execution).
     /// Absent = clean, present = dirty with the specified Dirtyness state.
-    #[task_storage(storage = "direct", category = "meta")]
+    #[task_storage(storage = "direct", category = "meta", variant = "Dirty")]
     pub dirty: Dirtyness,
 
     /// Count of dirty containers in the aggregated subgraph.
     /// Absent = 0, present = actual count.
-    #[task_storage(storage = "direct", category = "meta")]
+    #[task_storage(
+        storage = "direct",
+        category = "meta",
+        variant = "AggregatedDirtyContainerCount"
+    )]
     pub aggregated_dirty_container_count: i32,
 
     /// Individual dirty containers in the aggregated subgraph.
-    #[task_storage(storage = "counter_map", category = "meta", filter_transient)]
+    #[task_storage(
+        storage = "counter_map",
+        category = "meta",
+        filter_transient,
+        variant = "AggregatedDirtyContainer",
+        key_field = "task"
+    )]
     pub aggregated_dirty_containers: CounterMap<TaskId, i32>,
 
     /// Whether clean in current session (transient flag).
-    #[task_storage(storage = "flag", category = "transient")]
+    #[task_storage(
+        storage = "flag",
+        category = "transient",
+        variant = "CurrentSessionClean"
+    )]
     pub current_session_clean: bool,
 
     /// Count of clean containers in current session (transient).
     /// Absent = 0, present = actual count.
-    #[task_storage(storage = "direct", category = "transient")]
+    #[task_storage(
+        storage = "direct",
+        category = "transient",
+        variant = "AggregatedCurrentSessionCleanContainerCount"
+    )]
     pub aggregated_current_session_clean_container_count: i32,
 
     /// Individual clean containers in current session (transient).
-    #[task_storage(storage = "counter_map", category = "transient")]
+    #[task_storage(
+        storage = "counter_map",
+        category = "transient",
+        variant = "AggregatedCurrentSessionCleanContainer",
+        key_field = "task"
+    )]
     pub aggregated_current_session_clean_containers: CounterMap<TaskId, i32>,
 
     // =========================================================================
@@ -136,11 +202,11 @@ pub struct TaskStorageSchema {
     // Persisted flags come first, then transient flags.
     // =========================================================================
     /// Whether the task has an invalidator.
-    #[task_storage(storage = "flag", category = "meta")]
+    #[task_storage(storage = "flag", category = "meta", variant = "HasInvalidator")]
     pub invalidator: bool,
 
     /// Whether the task output is immutable (persisted).
-    #[task_storage(storage = "flag", category = "meta")]
+    #[task_storage(storage = "flag", category = "meta", variant = "Immutable")]
     pub immutable: bool,
 
     // =========================================================================
@@ -179,38 +245,83 @@ pub struct TaskStorageSchema {
     // CHILDREN & AGGREGATION (meta)
     // =========================================================================
     /// Child tasks of this task.
-    #[task_storage(storage = "auto_set", category = "meta", filter_transient)]
+    #[task_storage(
+        storage = "auto_set",
+        category = "meta",
+        filter_transient,
+        variant = "Child",
+        key_field = "task"
+    )]
     pub children: AutoSet<TaskId>,
 
     /// Follower nodes in the aggregation tree (reference counted).
-    #[task_storage(storage = "counter_map", category = "meta", filter_transient)]
+    #[task_storage(
+        storage = "counter_map",
+        category = "meta",
+        filter_transient,
+        variant = "Follower",
+        key_field = "task"
+    )]
     pub followers: CounterMap<TaskId, u32>,
 
     // =========================================================================
     // DEPENDENCIES (data)
     // =========================================================================
     /// Tasks whose output this task depends on.
-    #[task_storage(storage = "auto_set", category = "data", filter_transient)]
+    #[task_storage(
+        storage = "auto_set",
+        category = "data",
+        filter_transient,
+        variant = "OutputDependency",
+        key_field = "target"
+    )]
     pub output_dependencies: AutoSet<TaskId>,
 
     /// Cells this task depends on.
-    #[task_storage(storage = "auto_set", category = "data", filter_transient)]
+    #[task_storage(
+        storage = "auto_set",
+        category = "data",
+        filter_transient,
+        variant = "CellDependency",
+        key_field = "target"
+    )]
     pub cell_dependencies: AutoSet<CellRef>,
 
     /// Collectibles this task depends on.
-    #[task_storage(storage = "auto_set", category = "data", filter_transient)]
+    #[task_storage(
+        storage = "auto_set",
+        category = "data",
+        filter_transient,
+        variant = "CollectiblesDependency",
+        key_field = "target"
+    )]
     pub collectibles_dependencies: AutoSet<CollectiblesRef>,
 
     /// Outdated output dependencies to be cleaned up (transient).
-    #[task_storage(storage = "auto_set", category = "transient")]
+    #[task_storage(
+        storage = "auto_set",
+        category = "transient",
+        variant = "OutdatedOutputDependency",
+        key_field = "target"
+    )]
     pub outdated_output_dependencies: AutoSet<TaskId>,
 
     /// Outdated cell dependencies to be cleaned up (transient).
-    #[task_storage(storage = "auto_set", category = "transient")]
+    #[task_storage(
+        storage = "auto_set",
+        category = "transient",
+        variant = "OutdatedCellDependency",
+        key_field = "target"
+    )]
     pub outdated_cell_dependencies: AutoSet<CellRef>,
 
     /// Outdated collectibles dependencies to be cleaned up (transient).
-    #[task_storage(storage = "auto_set", category = "transient")]
+    #[task_storage(
+        storage = "auto_set",
+        category = "transient",
+        variant = "OutdatedCollectiblesDependency",
+        key_field = "target"
+    )]
     pub outdated_collectibles_dependencies: AutoSet<CollectiblesRef>,
 
     // =========================================================================
@@ -219,28 +330,53 @@ pub struct TaskStorageSchema {
     /// Tasks that depend on specific cells of this task.
     /// Maps CellId -> Set<TaskId>
     /// AutoMultimap automatically filters transient values from inner sets during encoding.
-    #[task_storage(storage = "auto_multimap", category = "data")]
+    #[task_storage(
+        storage = "auto_multimap",
+        category = "data",
+        variant = "CellDependent",
+        key_fields = "cell, task"
+    )]
     pub cell_dependents: AutoMultimap<CellId, TaskId>,
 
     /// Tasks that depend on collectibles of a specific type from this task.
     /// Maps TraitTypeId -> Set<TaskId>
     /// AutoMultimap automatically filters transient values from inner sets during encoding.
-    #[task_storage(storage = "auto_multimap", category = "meta")]
+    #[task_storage(
+        storage = "auto_multimap",
+        category = "meta",
+        variant = "CollectiblesDependent",
+        key_fields = "collectible_type, task"
+    )]
     pub collectibles_dependents: AutoMultimap<TraitTypeId, TaskId>,
 
     // =========================================================================
     // CELL DATA (data)
     // =========================================================================
     /// Persistent cell data (serializable).
-    #[task_storage(storage = "auto_map", category = "data")]
+    #[task_storage(
+        storage = "auto_map",
+        category = "data",
+        variant = "CellData",
+        key_field = "cell"
+    )]
     pub cell_data: AutoMap<CellId, TypedSharedReference>,
 
     /// Transient cell data (not serializable).
-    #[task_storage(storage = "auto_map", category = "transient")]
+    #[task_storage(
+        storage = "auto_map",
+        category = "transient",
+        variant = "TransientCellData",
+        key_field = "cell"
+    )]
     pub transient_cell_data: AutoMap<CellId, SharedReference>,
 
     /// Maximum cell index per cell type.
-    #[task_storage(storage = "auto_map", category = "data")]
+    #[task_storage(
+        storage = "auto_map",
+        category = "data",
+        variant = "CellTypeMaxIndex",
+        key_field = "cell_type"
+    )]
     pub cell_type_max_index: AutoMap<ValueTypeId, u32>,
 
     // =========================================================================
@@ -249,17 +385,22 @@ pub struct TaskStorageSchema {
     /// Activeness state for root/once tasks (transient).
     /// Note: Lazy storage provides natural optionality -
     /// presence in Vec<LazyField> = Some, absence = None. No Option wrapper needed.
-    #[task_storage(storage = "direct", category = "transient")]
+    #[task_storage(storage = "direct", category = "transient", variant = "Activeness")]
     pub activeness: ActivenessState,
 
     /// In-progress execution state (transient).
     /// Note: Lazy storage provides natural optionality -
     /// presence in Vec<LazyField> = Some, absence = None. No Option wrapper needed.
-    #[task_storage(storage = "direct", category = "transient")]
+    #[task_storage(storage = "direct", category = "transient", variant = "InProgress")]
     pub in_progress: InProgressState,
 
     /// In-progress cell state for cells being computed (transient).
-    #[task_storage(storage = "auto_map", category = "transient")]
+    #[task_storage(
+        storage = "auto_map",
+        category = "transient",
+        variant = "InProgressCell",
+        key_field = "cell"
+    )]
     pub in_progress_cells: AutoMap<CellId, InProgressCellState>,
 }
 
@@ -625,18 +766,18 @@ impl TaskStorage {
     pub fn add_cached_data_item(&mut self, item: CachedDataItem) -> bool {
         use turbo_tasks::KeyValuePair;
         let (key, value) = item.into_key_and_value();
-        self.insert_cached_data_item_kv(key, value).is_none()
+        self.insert_kv(key, value).is_none()
     }
 
     /// Insert a CachedDataItem, returning the old value if present.
     pub fn insert_cached_data_item(&mut self, item: CachedDataItem) -> Option<CachedDataItemValue> {
         use turbo_tasks::KeyValuePair;
         let (key, value) = item.into_key_and_value();
-        self.insert_cached_data_item_kv(key, value)
+        self.insert_kv(key, value)
     }
 
     /// Insert a key-value pair, returning the old value if present.
-    fn insert_cached_data_item_kv(
+    fn insert_kv(
         &mut self,
         key: CachedDataItemKey,
         value: CachedDataItemValue,
@@ -1130,7 +1271,7 @@ impl TaskStorage {
     }
 
     /// Check if a CachedDataItem key exists in storage.
-    pub fn contains_cached_data_item_key(&self, key: &CachedDataItemKey) -> bool {
+    pub fn contains_key(&self, key: &CachedDataItemKey) -> bool {
         self.get_cached_data_item(key).is_some()
     }
 
@@ -1943,7 +2084,7 @@ mod tests {
     // ==========================================================================
 
     #[test]
-    fn test_cached_data_item_adapter_basic() {
+    fn test_adapter_basic() {
         use crate::data::{CachedDataItem, CachedDataItemKey, CachedDataItemValue};
 
         let mut storage = TaskStorage::new();
@@ -1960,7 +2101,7 @@ mod tests {
         // Test get for Output
         let key = CachedDataItemKey::Output {};
         assert!(storage.get_cached_data_item(&key).is_some());
-        assert!(storage.contains_cached_data_item_key(&key));
+        assert!(storage.contains_key(&key));
 
         // Test remove for Output
         let removed = storage.remove_cached_data_item(&key);
@@ -1999,7 +2140,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_data_item_adapter_flags() {
+    fn test_adapter_flags() {
         use crate::data::{CachedDataItem, CachedDataItemKey, CachedDataItemValue};
 
         let mut storage = TaskStorage::new();
@@ -2027,7 +2168,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_data_item_adapter_counter_map() {
+    fn test_adapter_counter_map() {
         use crate::data::{CachedDataItem, CachedDataItemKey, CachedDataItemValue};
 
         let mut storage = TaskStorage::new();
@@ -2067,15 +2208,11 @@ mod tests {
             Some(CachedDataItemValue::Follower { value: 3 })
         ));
         // After removal, followers map might be empty or the key just removed
-        assert!(
-            storage
-                .followers()
-                .map_or(true, |f| f.get(&task2).is_none())
-        );
+        assert!(storage.followers().is_none_or(|f| f.get(&task2).is_none()));
     }
 
     #[test]
-    fn test_cached_data_item_adapter_lazy_autoset() {
+    fn test_adapter_lazy_autoset() {
         use crate::data::{CachedDataItem, CachedDataItemKey, CachedDataItemValue};
 
         let mut storage = TaskStorage::new();
@@ -2118,7 +2255,7 @@ mod tests {
     }
 
     #[test]
-    fn test_cached_data_item_adapter_multimap() {
+    fn test_adapter_multimap() {
         use turbo_tasks::ValueTypeId;
 
         use crate::data::{CachedDataItem, CachedDataItemKey, CachedDataItemValue};
