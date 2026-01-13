@@ -447,6 +447,24 @@ impl TaskStorage {
 //   - max_index: u32
 
 impl TaskStorage {
+    /// Custom serialization for meta fields.
+    /// Currently no meta fields use custom serialization, so this is a no-op.
+    fn encode_custom_meta_fields(
+        &self,
+        _encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
+    ) -> Result<(), bincode::error::EncodeError> {
+        Ok(())
+    }
+
+    /// Custom deserialization for meta fields.
+    /// Currently no meta fields use custom serialization, so this is a no-op.
+    fn decode_custom_meta_fields(
+        &mut self,
+        _decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
+    ) -> Result<(), bincode::error::DecodeError> {
+        Ok(())
+    }
+
     /// Encode cell_data and cell_type_max_index with optimized format.
     ///
     /// Groups cells by ValueTypeId, encodes indices implicitly by position,
@@ -455,7 +473,7 @@ impl TaskStorage {
     ///
     /// This requires the encoder to be a TurboBincodeEncoder since SharedReference
     /// uses custom turbo_bincode serialization.
-    fn encode_custom_fields(
+    fn encode_custom_data_fields(
         &self,
         encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
     ) -> Result<(), bincode::error::EncodeError> {

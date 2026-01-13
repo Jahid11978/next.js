@@ -720,25 +720,6 @@ impl GroupedFields {
     fn persistent_lazy_data(&self) -> impl Iterator<Item = &FieldInfo> {
         self.lazy_data().filter(|f| !f.is_transient())
     }
-
-    /// Returns true if any data fields have custom_serialization.
-    fn has_custom_serialization_data(&self) -> bool {
-        self.fields
-            .iter()
-            .any(|f| f.category == Category::Data && f.custom_serialization)
-    }
-
-    /// Returns an iterator over persistent inline data fields that don't use custom serialization.
-    fn persistent_inline_data_standard(&self) -> impl Iterator<Item = &FieldInfo> {
-        self.persistent_inline_data()
-            .filter(|f| !f.has_custom_serialization())
-    }
-
-    /// Returns an iterator over persistent lazy data fields that don't use custom serialization.
-    fn persistent_lazy_data_standard(&self) -> impl Iterator<Item = &FieldInfo> {
-        self.persistent_lazy_data()
-            .filter(|f| !f.has_custom_serialization())
-    }
 }
 
 // =============================================================================
@@ -2473,18 +2454,25 @@ fn generate_flag_trait_accessor_methods(field: &FieldInfo) -> proc_macro2::Token
 ///
 /// Only persistent (non-transient) fields are encoded/decoded.
 fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2::TokenStream {
-    // Collect persistent fields by category using helpers
-    let persistent_inline_meta: Vec<_> = grouped_fields.persistent_inline_meta().collect();
-    let persistent_lazy_meta: Vec<_> = grouped_fields.persistent_lazy_meta().collect();
-
-    // For data fields, use standard (non-custom_serialization) fields only
-    let persistent_inline_data_standard: Vec<_> =
-        grouped_fields.persistent_inline_data_standard().collect();
-    let persistent_lazy_data_standard: Vec<_> =
-        grouped_fields.persistent_lazy_data_standard().collect();
+    // Collect persistent fields by category, filtering out custom_serialization fields
+    let persistent_inline_meta: Vec<_> = grouped_fields
+        .persistent_inline_meta()
+        .filter(|f| !f.has_custom_serialization())
+        .collect();
+    let persistent_lazy_meta: Vec<_> = grouped_fields
+        .persistent_lazy_meta()
+        .filter(|f| !f.has_custom_serialization())
+        .collect();
+    let persistent_inline_data: Vec<_> = grouped_fields
+        .persistent_inline_data()
+        .filter(|f| !f.has_custom_serialization())
+        .collect();
+    let persistent_lazy_data: Vec<_> = grouped_fields
+        .persistent_lazy_data()
+        .filter(|f| !f.has_custom_serialization())
+        .collect();
 
     let has_flags = grouped_fields.persisted_flags().next().is_some();
-    let has_custom_serialization_data = grouped_fields.has_custom_serialization_data();
 
     // Generate encode_meta body
     let encode_meta_inline: Vec<_> = persistent_inline_meta
@@ -2504,24 +2492,13 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
     let encode_meta_lazy = generate_encode_lazy_fields(&persistent_lazy_meta);
 
-    // Generate encode_data body (standard fields only, custom_serialization fields handled
-    // separately)
-    let encode_data_inline: Vec<_> = persistent_inline_data_standard
+    // Generate encode_data body (custom_serialization fields handled via encode_custom_data_fields)
+    let encode_data_inline: Vec<_> = persistent_inline_data
         .iter()
         .map(|field| generate_encode_inline_field(field))
         .collect();
 
-    let encode_data_lazy = generate_encode_lazy_fields(&persistent_lazy_data_standard);
-
-    // Generate custom serialization call if needed
-    let encode_custom_data = if has_custom_serialization_data {
-        quote! {
-            // Encode fields with custom_serialization
-            self.encode_custom_fields(encoder)?;
-        }
-    } else {
-        quote! {}
-    };
+    let encode_data_lazy = generate_encode_lazy_fields(&persistent_lazy_data);
 
     // Generate decode_meta body
     let decode_meta_inline: Vec<_> = persistent_inline_meta
@@ -2541,33 +2518,23 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
     let decode_meta_lazy = generate_decode_lazy_fields(&persistent_lazy_meta);
 
-    // Generate decode_data body (standard fields only, custom_serialization fields handled
-    // separately)
-    let decode_data_inline: Vec<_> = persistent_inline_data_standard
+    // Generate decode_data body (custom_serialization fields handled via decode_custom_data_fields)
+    let decode_data_inline: Vec<_> = persistent_inline_data
         .iter()
         .map(|field| generate_decode_inline_field(field))
         .collect();
 
-    let decode_data_lazy = generate_decode_lazy_fields(&persistent_lazy_data_standard);
-
-    // Generate custom deserialization call if needed
-    let decode_custom_data = if has_custom_serialization_data {
-        quote! {
-            // Decode fields with custom_serialization
-            self.decode_custom_data_fields(decoder)?;
-        }
-    } else {
-        quote! {}
-    };
+    let decode_data_lazy = generate_decode_lazy_fields(&persistent_lazy_data);
 
     quote! {
         #[automatically_derived]
         impl TaskStorage {
             /// Encode meta category fields directly to bincode.
             /// Only persistent (non-transient) fields are encoded.
-            pub fn encode_meta<E: bincode::enc::Encoder>(
+            /// Fields with custom_serialization are handled via encode_custom_meta_fields.
+            pub fn encode_meta(
                 &self,
-                encoder: &mut E,
+                encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
             ) -> Result<(), bincode::error::EncodeError> {
                 // Encode inline meta fields
                 #(#encode_meta_inline)*
@@ -2578,33 +2545,37 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
                 // Encode lazy meta fields
                 #encode_meta_lazy
 
+                // Encode fields with custom_serialization
+                self.encode_custom_meta_fields(encoder)?;
+
                 Ok(())
             }
 
             /// Encode data category fields directly to bincode.
             /// Only persistent (non-transient) fields are encoded.
-            /// Fields with custom_serialization are handled via encode_custom_fields.
+            /// Fields with custom_serialization are handled via encode_custom_data_fields.
             pub fn encode_data(
                 &self,
                 encoder: &mut turbo_bincode::TurboBincodeEncoder<'_>,
             ) -> Result<(), bincode::error::EncodeError> {
-                // Encode inline data fields (standard serialization only)
+                // Encode inline data fields
                 #(#encode_data_inline)*
 
-                // Encode lazy data fields (standard serialization only)
+                // Encode lazy data fields
                 #encode_data_lazy
 
                 // Encode fields with custom_serialization
-                #encode_custom_data
+                self.encode_custom_data_fields(encoder)?;
 
                 Ok(())
             }
 
             /// Decode meta category fields from bincode.
             /// Only persistent (non-transient) fields are decoded.
-            pub fn decode_meta<D: bincode::de::Decoder>(
+            /// Fields with custom_serialization are handled via decode_custom_meta_fields.
+            pub fn decode_meta(
                 &mut self,
-                decoder: &mut D,
+                decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
             ) -> Result<(), bincode::error::DecodeError> {
                 // Decode inline meta fields
                 #(#decode_meta_inline)*
@@ -2614,6 +2585,9 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
 
                 // Decode lazy meta fields
                 #decode_meta_lazy
+
+                // Decode fields with custom_serialization
+                self.decode_custom_meta_fields(decoder)?;
 
                 Ok(())
             }
@@ -2625,14 +2599,14 @@ fn generate_encode_decode_methods(grouped_fields: &GroupedFields) -> proc_macro2
                 &mut self,
                 decoder: &mut turbo_bincode::TurboBincodeDecoder<'_>,
             ) -> Result<(), bincode::error::DecodeError> {
-                // Decode inline data fields (standard serialization only)
+                // Decode inline data fields
                 #(#decode_data_inline)*
 
-                // Decode lazy data fields (standard serialization only)
+                // Decode lazy data fields
                 #decode_data_lazy
 
                 // Decode fields with custom_serialization
-                #decode_custom_data
+                self.decode_custom_data_fields(decoder)?;
 
                 Ok(())
             }
