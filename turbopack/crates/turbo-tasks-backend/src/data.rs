@@ -1,10 +1,18 @@
+use std::{
+    fmt::{self, Debug, Display},
+    pin::Pin,
+    sync::Arc,
+};
+
+use anyhow::Result;
 use bincode::{Decode, Encode};
+use parking_lot::Mutex;
 use rustc_hash::FxHashSet;
 use turbo_tasks::{
-    CellId, KeyValuePair, SharedReference, TaskExecutionReason, TaskId, TaskPriority, TraitTypeId,
-    TypedSharedReference, ValueTypeId,
-    backend::TurboTasksExecutionError,
-    event::{Event, EventListener},
+    CellId, KeyValuePair, RawVc, SharedReference, TaskExecutionReason, TaskId, TaskPriority,
+    TraitTypeId, TypedSharedReference, ValueTypeId,
+    backend::{CachedTaskType, TransientTaskRoot, TurboTasksExecutionError},
+    event::{Event, EventDescription, EventListener},
 };
 
 use crate::{
@@ -29,6 +37,8 @@ macro_rules! transient_traits {
                 panic!(concat!(stringify!($name), " cannot be compared"));
             }
         }
+
+        impl Eq for $name {}
     };
 }
 
@@ -163,7 +173,47 @@ impl ActivenessState {
 
 transient_traits!(ActivenessState);
 
-impl Eq for ActivenessState {}
+type TransientTaskOnce =
+    Mutex<Option<Pin<Box<dyn Future<Output = Result<RawVc>> + Send + 'static>>>>;
+
+pub enum TransientTask {
+    /// A root task that will track dependencies and re-execute when
+    /// dependencies change. Task will eventually settle to the correct
+    /// execution.
+    ///
+    /// Always active. Automatically scheduled.
+    Root(TransientTaskRoot),
+
+    // TODO implement these strongly consistency
+    /// A single root task execution. It won't track dependencies.
+    /// Task will definitely include all invalidations that happened before the
+    /// start of the task. It may or may not include invalidations that
+    /// happened after that. It may see these invalidations partially
+    /// applied.
+    ///
+    /// Active until done. Automatically scheduled.
+    Once(TransientTaskOnce),
+}
+
+impl Debug for TransientTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransientTask::Root(_) => f.write_str("TransientTask::Root"),
+            TransientTask::Once(_) => f.write_str("TransientTask::Once"),
+        }
+    }
+}
+
+impl Display for TransientTask {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            TransientTask::Root(_) => f.write_str("Root Task"),
+            TransientTask::Once(_) => f.write_str("Once Task"),
+        }
+    }
+}
+
+transient_traits!(TransientTask);
 
 #[derive(Debug, Clone, Copy, Encode, Decode, PartialEq, Eq)]
 pub enum Dirtyness {
@@ -175,6 +225,15 @@ pub enum Dirtyness {
 pub enum RootType {
     RootTask,
     OnceTask,
+}
+
+impl Display for RootType {
+    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
+        match self {
+            RootType::RootTask => f.write_str("Root Task"),
+            RootType::OnceTask => f.write_str("Once Task"),
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -209,16 +268,12 @@ pub enum InProgressState {
 
 transient_traits!(InProgressState);
 
-impl Eq for InProgressState {}
-
 #[derive(Debug)]
 pub struct InProgressCellState {
     pub event: Event,
 }
 
 transient_traits!(InProgressCellState);
-
-impl Eq for InProgressCellState {}
 
 impl InProgressCellState {
     pub fn new(task_id: TaskId, cell: CellId) -> Self {
@@ -257,6 +312,15 @@ pub struct LeafDistance {
 
 #[derive(Debug, Clone, KeyValuePair, Encode, Decode)]
 pub enum CachedDataItem {
+    // Task Type
+    TaskType {
+        value: Arc<CachedTaskType>,
+    },
+    TransientTaskType {
+        #[bincode(skip, default = "unreachable_decode")]
+        value: Arc<TransientTask>,
+    },
+
     // Output
     Output {
         value: OutputValue,
@@ -447,6 +511,8 @@ impl CachedDataItem {
 
     pub fn is_persistent(&self) -> bool {
         match self {
+            CachedDataItem::TaskType { .. } => true,
+            CachedDataItem::TransientTaskType { .. } => false,
             CachedDataItem::Output { value } => value.is_transient(),
             CachedDataItem::Collectible { collectible, .. } => {
                 !collectible.cell.task.is_transient()
@@ -486,35 +552,19 @@ impl CachedDataItem {
         }
     }
 
-    pub fn new_scheduled<InnerFnDescription>(
-        reason: TaskExecutionReason,
-        description: impl FnOnce() -> InnerFnDescription,
-    ) -> Self
-    where
-        InnerFnDescription: Fn() -> String + Sync + Send + 'static,
-    {
-        let done_event = Event::new(move || {
-            let inner = description();
-            move || format!("{} done_event", inner())
-        });
+    pub fn new_scheduled(reason: TaskExecutionReason, description: EventDescription) -> Self {
+        let done_event = Event::new(move || move || format!("{description} done_event"));
         CachedDataItem::InProgress {
             value: InProgressState::Scheduled { done_event, reason },
         }
     }
 
-    pub fn new_scheduled_with_listener<InnerFnDescription, InnerFnNote>(
+    pub fn new_scheduled_with_listener(
         reason: TaskExecutionReason,
-        description: impl FnOnce() -> InnerFnDescription,
-        note: impl FnOnce() -> InnerFnNote,
-    ) -> (Self, EventListener)
-    where
-        InnerFnDescription: Fn() -> String + Sync + Send + 'static,
-        InnerFnNote: Fn() -> String + Sync + Send + 'static,
-    {
-        let done_event = Event::new(move || {
-            let inner = description();
-            move || format!("{} done_event", inner())
-        });
+        description: EventDescription,
+        note: EventDescription,
+    ) -> (Self, EventListener) {
+        let done_event = Event::new(move || move || format!("{description} done_event"));
         let listener = done_event.listen_with_note(note);
         (
             CachedDataItem::InProgress {
@@ -526,7 +576,8 @@ impl CachedDataItem {
 
     pub fn category(&self) -> TaskDataCategory {
         match self {
-            Self::CellData { .. }
+            Self::TaskType { .. }
+            | Self::CellData { .. }
             | Self::CellTypeMaxIndex { .. }
             | Self::OutputDependency { .. }
             | Self::CellDependency { .. }
@@ -549,7 +600,8 @@ impl CachedDataItem {
             | Self::Immutable { .. }
             | Self::CollectiblesDependent { .. } => TaskDataCategory::Meta,
 
-            Self::OutdatedCollectible { .. }
+            Self::TransientTaskType { .. }
+            | Self::OutdatedCollectible { .. }
             | Self::OutdatedOutputDependency { .. }
             | Self::OutdatedCellDependency { .. }
             | Self::OutdatedCollectiblesDependency { .. }
@@ -579,6 +631,8 @@ impl CachedDataItemKey {
 
     pub fn is_persistent(&self) -> bool {
         match self {
+            CachedDataItemKey::TaskType { .. } => true,
+            CachedDataItemKey::TransientTaskType { .. } => false,
             CachedDataItemKey::Output { .. } => true,
             CachedDataItemKey::Collectible { collectible, .. } => {
                 !collectible.cell.task.is_transient()
@@ -626,7 +680,8 @@ impl CachedDataItemKey {
 impl CachedDataItemType {
     pub fn category(&self) -> TaskDataCategory {
         match self {
-            Self::CellData { .. }
+            Self::TaskType
+            | Self::CellData { .. }
             | Self::CellTypeMaxIndex { .. }
             | Self::OutputDependency { .. }
             | Self::CellDependency { .. }
@@ -649,7 +704,8 @@ impl CachedDataItemType {
             | Self::Immutable { .. }
             | Self::CollectiblesDependent { .. } => TaskDataCategory::Meta,
 
-            Self::OutdatedCollectible { .. }
+            Self::TransientTaskType { .. }
+            | Self::OutdatedCollectible { .. }
             | Self::OutdatedOutputDependency { .. }
             | Self::OutdatedCellDependency { .. }
             | Self::OutdatedCollectiblesDependency { .. }
@@ -665,7 +721,8 @@ impl CachedDataItemType {
 
     pub fn is_persistent(&self) -> bool {
         match self {
-            Self::Output
+            Self::TaskType
+            | Self::Output
             | Self::Collectible
             | Self::Dirty
             | Self::Child
@@ -687,7 +744,8 @@ impl CachedDataItemType {
             | Self::HasInvalidator
             | Self::Immutable => true,
 
-            Self::Activeness
+            Self::TransientTaskType
+            | Self::Activeness
             | Self::InProgress
             | Self::InProgressCell
             | Self::CurrentSessionClean

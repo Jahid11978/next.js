@@ -117,11 +117,7 @@ impl UpdateCellOperation {
                     })
                 })
                 => (task, key)
-            )
-            .filter(|&(dependent_task_id, _)| {
-                // once tasks are never invalidated
-                !ctx.is_once_task(dependent_task_id)
-            });
+            );
             let mut dependent_tasks: FxIndexMap<TaskId, SmallVec<[Option<u64>; 2]>> =
                 FxIndexMap::default();
             for (task, key) in tasks_with_keys {
