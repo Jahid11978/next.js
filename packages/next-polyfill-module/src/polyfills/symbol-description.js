@@ -11,7 +11,7 @@
  *
  * https://caniuse.com/mdn-javascript_builtins_symbol_description
  */
-if (!('description' in Symbol.prototype)) {
+if (!Symbol.prototype.description) {
   Object.defineProperty(Symbol.prototype, 'description', {
     configurable: true,
     get: function get() {

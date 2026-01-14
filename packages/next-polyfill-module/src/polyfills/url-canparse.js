@@ -11,7 +11,7 @@
  *
  * Modified from https://github.com/zloirock/core-js/blob/master/packages/core-js/modules/web.url.can-parse.js
  */
-if (!('canParse' in URL)) {
+if (!URL.canParse) {
   URL.canParse = function (url, base) {
     try {
       return !!new URL(url, base)

@@ -12,9 +12,9 @@
  * https://caniuse.com/mdn-javascript_builtins_string_trimstart
  * https://caniuse.com/mdn-javascript_builtins_string_trimend
  */
-if (!('trimStart' in String.prototype)) {
+if (!String.prototype.trimStart) {
   String.prototype.trimStart = String.prototype.trimLeft
 }
-if (!('trimEnd' in String.prototype)) {
+if (!String.prototype.trimEnd) {
   String.prototype.trimEnd = String.prototype.trimRight
 }
