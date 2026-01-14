@@ -322,7 +322,7 @@ async function createTreeCodeFromPath(
         filePathEntries
       )
 
-      // Only resolve global-* convention files at the root layer
+      // Resolve global-* convention files at the root layer
       if (isRootLayer) {
         const resolvedGlobalErrorPath = await resolver(
           `${appDirPrefix}/${GLOBAL_ERROR_FILE_TYPE}`
@@ -330,9 +330,6 @@ async function createTreeCodeFromPath(
         if (resolvedGlobalErrorPath) {
           globalError = resolvedGlobalErrorPath
         }
-        // Add global-error to root layer's filePaths, so that it's always available,
-        // by default it's the built-in global-error.js
-        filePaths.set(GLOBAL_ERROR_FILE_TYPE, globalError)
 
         // TODO(global-not-found): remove this flag assertion condition
         //  once global-not-found is stable
@@ -348,6 +345,10 @@ async function createTreeCodeFromPath(
           filePaths.set(GLOBAL_NOT_FOUND_FILE_TYPE, globalNotFound)
         }
       }
+
+      // Add global-error to ALL layers' filePaths, so that it's always available.
+      // By default it's the built-in global-error.js, or user's custom one if defined.
+      filePaths.set(GLOBAL_ERROR_FILE_TYPE, globalError)
 
       let definedFilePaths = Array.from(filePaths.entries()).filter(
         ([, filePath]) => filePath !== undefined
