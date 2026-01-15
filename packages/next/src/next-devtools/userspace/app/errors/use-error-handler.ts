@@ -4,9 +4,9 @@ import {
   formatConsoleArgs,
   parseConsoleArgs,
 } from '../../../../client/lib/console'
-import isError from '../../../../lib/is-error'
+import isError, { getProperError } from '../../../../lib/is-error'
 import { createConsoleError } from '../../../shared/console-error'
-import { coerceError, setOwnerStackIfAvailable } from './stitched-error'
+import { setOwnerStackIfAvailable } from './stitched-error'
 import { forwardUnhandledError, logUnhandledRejection } from '../forward-logs'
 
 const queueMicroTask =
@@ -93,7 +93,7 @@ function onUnhandledError(event: WindowEventMap['error']): void | boolean {
   // When there's an error property present, we log the error to error overlay.
   // Otherwise we don't do anything as it's not logging in the console either.
   if (thrownValue) {
-    const error = coerceError(thrownValue)
+    const error = getProperError(thrownValue)
     setOwnerStackIfAvailable(error)
     handleClientError(error)
     forwardUnhandledError(error)
@@ -107,7 +107,7 @@ function onUnhandledRejection(ev: WindowEventMap['unhandledrejection']): void {
     return
   }
 
-  const error = coerceError(reason)
+  const error = getProperError(reason)
   setOwnerStackIfAvailable(error)
 
   rejectionQueue.push(error)
