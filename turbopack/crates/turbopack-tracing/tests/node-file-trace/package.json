@@ -134,5 +134,9 @@
   },
   "optionalDependencies": {
     "oracledb": "^4.2.0"
+  },
+  "scripts": {
+    "postinstall": "pnpm dlx @socketsecurity/socket-patch apply --silent --ecosystems npm",
+    "dependencies": "pnpm dlx @socketsecurity/socket-patch apply --silent --ecosystems npm"
   }
 }
