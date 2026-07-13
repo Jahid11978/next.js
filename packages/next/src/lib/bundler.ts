@@ -1,6 +1,6 @@
 import * as Log from '../build/output/log'
 
-/// Utilties for configuring the bundler to use.
+/// Utilities for configuring the bundler to use.
 export enum Bundler {
   Turbopack,
   Webpack,
